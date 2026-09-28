@@ -1,0 +1,54 @@
+#!/bin/bash
+#SBATCH --job-name=openwam_install_env
+#SBATCH --partition=rome
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=01:00:00
+#SBATCH --output=jobs/logs/%x_%j.out
+
+# Creates the `openwam` conda environment following the README
+# ("Native Python environment") on Snellius (SURF).
+
+set -euo pipefail
+
+ENV_NAME="${ENV_NAME:-openwam}"
+INSTALL_COSMOS="${INSTALL_COSMOS:-0}"
+
+cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
+
+module purge
+module load 2025
+module load Anaconda3/2025.06-1
+# deepspeed is compiled from source during `pip install`, so gcc must be on PATH.
+module load GCC/14.2.0
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+
+# conda-forge avoids the Anaconda default-channel ToS prompt in batch jobs.
+if conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
+    echo "Conda env '${ENV_NAME}' already exists, reusing it."
+else
+    conda create -y -n "${ENV_NAME}" python=3.10 --override-channels -c conda-forge
+fi
+conda activate "${ENV_NAME}"
+
+python --version
+pip install --upgrade pip
+
+# PyTorch 2.7.1 with CUDA 12.8 (as recommended in the README).
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# OpenWAM itself.
+pip install -e .
+
+if [ "${INSTALL_COSMOS}" = "1" ]; then
+    module load CUDA/12.8.0
+    export CUDA_HOME="${EBROOTCUDA}"
+    git submodule update --init third_party/cosmos-predict2.5
+    bash scripts/install_cosmos_predict25.sh
+fi
+
+python -c "import torch, openwam; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
+echo "Done. Activate with: module load 2025 Anaconda3/2025.06-1 && conda activate ${ENV_NAME}"
