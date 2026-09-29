@@ -1,0 +1,30 @@
+#!/bin/bash
+#SBATCH --job-name=openwam_robotwin_pca_plot
+#SBATCH --partition=rome
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=00:15:00
+#SBATCH --output=jobs/logs/%x_%j.out
+
+# Plots the 2D PCA of the action priors recorded by jobs/robotwin_pca.job, for
+# the first NUM_CHUNKS chunks (plain + colored by trajectory success).
+# Results go to <PCA_DIR>/pca/.
+#
+# Submit from the repo root, after (or chained to) the rerun job:
+#   sbatch --export=ALL,PCA_DIR=outputs/robotwin_pca/<array job id> jobs/robotwin_pca_plot.job
+#   sbatch --export=ALL,PCA_DIR=outputs/robotwin_pca/<id> --dependency=afterany:<id> jobs/robotwin_pca_plot.job
+# (Snellius does not forward a `VAR=... sbatch` prefix; use --export=ALL,VAR=...)
+
+set -euo pipefail
+
+PCA_DIR="${PCA_DIR:?PCA_DIR must point to outputs/robotwin_pca/<array job id>}"
+NUM_CHUNKS="${NUM_CHUNKS:-5}"
+# The robotwin env has numpy + matplotlib (the openwam env has no matplotlib).
+PLOT_PYTHON="${PLOT_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
+
+cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
+[[ -d "${PCA_DIR}" ]] || { echo "[ERROR] PCA_DIR not found: ${PCA_DIR}" >&2; exit 1; }
+
+export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/matplotlib}"
+"${PLOT_PYTHON}" -m utils.plot_robotwin_pca "${PCA_DIR}" --num-chunks "${NUM_CHUNKS}"

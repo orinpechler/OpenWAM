@@ -1,0 +1,155 @@
+#!/bin/bash
+#SBATCH --job-name=openwam_robotwin_pca
+#SBATCH --partition=gpu_a100
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=02:00:00
+#SBATCH --array=0-9
+#SBATCH --output=jobs/logs/%x_%A_%a.out
+
+# Reruns ONE RoboTwin episode of ONE task M times from the same starting point,
+# with a fresh action prior for every generated chunk, and records per rerun
+# the priors and whether the trajectory succeeded.
+#
+# M = (array size) x RUNS_PER_TASK. Each array task runs in parallel on its own
+# GPU and keeps one policy server up (utils/serve_random_prior.py) for
+# RUNS_PER_TASK sequential reruns, so the ~5 min model load + compile is paid
+# once per task instead of once per rerun.
+#
+# Output (shared by all array tasks):
+#   outputs/robotwin_pca/<array job id>/run_<g>/chunk_<k>.npz   prior (32, 80) + seed
+#   outputs/robotwin_pca/<array job id>/run_<g>/result.txt      success=0|1, status=<exit code>
+#   outputs/robotwin_pca/<array job id>/run_<g>/client.log      RoboTwin output
+#
+# Submit from the repo root (default M = 10 x 10 = 100):
+#   sbatch jobs/robotwin_pca.job
+#   sbatch --export=ALL,RUNS_PER_TASK=20 --array=0-4 jobs/robotwin_pca.job
+# (Snellius does not forward a `VAR=... sbatch` prefix; use --export=ALL,VAR=...)
+# Then plot with jobs/robotwin_pca_plot.job.
+
+set -euo pipefail
+
+ROBOTWIN_PATH="${ROBOTWIN_PATH:-/gpfs/home6/opechler/RoboTwin}"
+ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
+CKPT_DIR="${CKPT_DIR:-assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Sim-RoboTwin-Full}"
+ENV_NAME="${ENV_NAME:-openwam}"
+TASK="${TASK:-open_microwave}"
+TASK_CONFIG="${TASK_CONFIG:-demo_clean}"
+RUNS_PER_TASK="${RUNS_PER_TASK:-25}"
+SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
+
+TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
+
+# One episode per rerun, always the same one (seed 0) -> same starting point.
+export ROBOTWIN_TEST_NUM=1
+export ROBOTWIN_PATH ROBOTWIN_PYTHON
+
+cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
+[[ -d "${CKPT_DIR}" ]] || { echo "[ERROR] CKPT_DIR not found: ${CKPT_DIR}" >&2; exit 1; }
+
+OUT_DIR="$(pwd)/outputs/robotwin_pca/${SLURM_ARRAY_JOB_ID:-local}"
+mkdir -p "${OUT_DIR}"
+# Tells this task's server which rerun is in progress (read on every chunk).
+export PCA_OUT_DIR="${OUT_DIR}"
+export PCA_RUN_FILE="${OUT_DIR}/.current_run_task${TASK_ID}"
+rm -f "${PCA_RUN_FILE}"
+
+# GPU nodes can be shared between jobs (and between array tasks), so derive the
+# port from the job id, which is unique per array task.
+PORT=$((20000 + ${SLURM_JOB_ID:-0} % 20000))
+HOST=127.0.0.1
+SERVER_LOG="jobs/logs/${SLURM_JOB_NAME:-robotwin_pca}_${SLURM_ARRAY_JOB_ID:-local}_${TASK_ID}_server.log"
+
+module purge
+module load 2025
+module load Anaconda3/2025.06-1
+# torch.compile (Triton) needs a C compiler at runtime.
+module load GCC/14.2.0
+# RoboTwin pipes eval videos through ffmpeg (eval_video_log in task_config).
+module load FFmpeg/7.1.1-GCCcore-14.2.0
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "${ENV_NAME}"
+
+echo "node         : $(hostname)"
+echo "array task   : ${TASK_ID} (array job ${SLURM_ARRAY_JOB_ID:-local}), reruns=${RUNS_PER_TASK}"
+echo "checkpoint   : ${CKPT_DIR}"
+echo "task         : ${TASK} (${TASK_CONFIG}), episodes per rerun=${ROBOTWIN_TEST_NUM}"
+echo "server       : ws://${HOST}:${PORT}, log=${SERVER_LOG}"
+echo "output       : ${OUT_DIR}"
+nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv
+
+# ── Policy server (background) ───────────────────────────────────────────────
+python utils/serve_random_prior.py --ckpt-dir "${CKPT_DIR}" --device cuda:0 --host "${HOST}" --port "${PORT}" \
+    > "${SERVER_LOG}" 2>&1 &
+server_pid=$!
+
+cleanup() {
+    rm -f "${PCA_RUN_FILE}"
+    kill "${server_pid}" 2>/dev/null || true
+    wait "${server_pid}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+echo "[INFO] Waiting for policy server (pid ${server_pid}) on port ${PORT}..."
+start=${SECONDS}
+until (exec 3<>"/dev/tcp/${HOST}/${PORT}") 2>/dev/null; do
+    if ! kill -0 "${server_pid}" 2>/dev/null; then
+        echo "[ERROR] Policy server exited during startup. Last lines of ${SERVER_LOG}:" >&2
+        tail -n 50 "${SERVER_LOG}" >&2
+        exit 1
+    fi
+    if (( SECONDS - start > SERVER_TIMEOUT )); then
+        echo "[ERROR] Policy server not listening after ${SERVER_TIMEOUT}s." >&2
+        tail -n 50 "${SERVER_LOG}" >&2
+        exit 1
+    fi
+    sleep 5
+done
+echo "[INFO] Policy server up after $((SECONDS - start))s."
+
+# ── Sequential reruns from the same starting point ───────────────────────────
+n_failed=0
+for ((r = 0; r < RUNS_PER_TASK; r++)); do
+    run=$((TASK_ID * RUNS_PER_TASK + r))
+    run_dir="${OUT_DIR}/run_$(printf '%05d' "${run}")"
+    mkdir -p "${run_dir}"
+    echo "${run}" > "${PCA_RUN_FILE}"
+
+    if ! kill -0 "${server_pid}" 2>/dev/null; then
+        echo "[ERROR] Policy server died before run ${run}. Last lines of ${SERVER_LOG}:" >&2
+        tail -n 50 "${SERVER_LOG}" >&2
+        exit 1
+    fi
+
+    echo "[INFO] run ${run} ($((r + 1))/${RUNS_PER_TASK})"
+    # gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
+    set +e
+    bash benchmarks/robotwin/single_eval.sh "${TASK}" "${TASK_CONFIG}" "openwam_pca_run${run}" 0 "${PORT}" "${HOST}" \
+        > "${run_dir}/client.log" 2>&1
+    status=$?
+    set -e
+
+    # RoboTwin prints "Success rate: <succ>/<total>" (with ANSI colors) at the end.
+    succ="$(sed 's/\x1b\[[0-9;]*m//g' "${run_dir}/client.log" \
+        | grep -oE 'Success rate: [0-9]+/[0-9]+' | tail -n 1 | sed -E 's#.*: ([0-9]+)/.*#\1#' || true)"
+    if (( status != 0 )) || [[ -z "${succ}" ]]; then
+        n_failed=$((n_failed + 1))
+        echo "[WARN] run ${run} did not finish (status ${status}); see ${run_dir}/client.log" >&2
+        tail -n 20 "${run_dir}/client.log" >&2
+        succ=""
+    fi
+    printf 'success=%s\nstatus=%s\n' "${succ}" "${status}" > "${run_dir}/result.txt"
+
+    n_chunks=$(find "${run_dir}" -name 'chunk_*.npz' | wc -l)
+    echo "[INFO] run ${run}: success=${succ:-n/a} status=${status} chunks=${n_chunks}"
+    if (( n_chunks == 0 && status == 0 )); then
+        echo "[ERROR] No priors were recorded; the generate() patch did not apply." >&2
+        exit 1
+    fi
+done
+
+echo "[INFO] ${RUNS_PER_TASK} reruns done, ${n_failed} did not finish."
+exit $(( n_failed > 0 ? 1 : 0 ))
