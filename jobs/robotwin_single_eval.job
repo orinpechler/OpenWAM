@@ -5,33 +5,52 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=18
-#SBATCH --time=01:00:00
+#SBATCH --time=05:00:00
 #SBATCH --output=jobs/logs/%x_%j.out
 
-# Smoke test of the RoboTwin benchmark on one Snellius GPU: starts the OpenWAM
-# policy server in the background, waits until its WebSocket port is open, then
-# runs benchmarks/robotwin/single_eval.sh for ONE task and ONE episode.
-# Server and simulator share the single allocated GPU.
+# Scans RoboTwin starting scenes to find one where the policy FAILS. Starts the
+# stock OpenWAM policy server once (fixed default noise seed, as in the
+# benchmark), then runs ONE episode per RoboTwin seed SEED_START,
+# SEED_START+1, ... via utils/single_eval_seed.sh, and stops at the first
+# failure (unless STOP_AT_FIRST_FAIL=0). Seed s starts from scene seed
+# >= 100000 * (1 + s); pass the failing s to jobs/robotwin_pca.job as SCENE_SEED.
+#
+# Output: outputs/robotwin_seed_scan/<job id>/scan.tsv  (seed, scene_seed, success, steps, status)
+#         outputs/robotwin_seed_scan/<job id>/seed_<s>.log  RoboTwin output per seed
 #
 # Submit from the repo root:
 #   sbatch jobs/robotwin_single_eval.job
+#   sbatch --export=ALL,TASK=<task>,SEED_START=100,NUM_SEEDS=40 jobs/robotwin_single_eval.job
+# (Snellius does not forward a `VAR=... sbatch` prefix; use --export=ALL,VAR=...)
 
 set -euo pipefail
 
 ROBOTWIN_PATH="${ROBOTWIN_PATH:-/gpfs/home6/opechler/RoboTwin}"
 ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
-CKPT_DIR="${CKPT_DIR:-assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Sim-RoboTwin-Full}"
+CKPT_DIR="${CKPT_DIR:-/scratch-shared/opechler/openwam_ckpt/OpenWAM-Alpha-Sim-RoboTwin-Clean2Random}"
 ENV_NAME="${ENV_NAME:-openwam}"
 TASK="${TASK:-adjust_bottle}"
-TASK_CONFIG="${TASK_CONFIG:-demo_clean}"
+TASK_CONFIG="${TASK_CONFIG:-demo_randomized}"   # keep equal to robotwin_pca.job
+SEED_START="${SEED_START:-0}"
+NUM_SEEDS="${NUM_SEEDS:-60}"
+STOP_AT_FIRST_FAIL="${STOP_AT_FIRST_FAIL:-1}"
+# Some scenes hang in RoboTwin's setup (expert check); skip a seed after this.
+EPISODE_TIMEOUT="${EPISODE_TIMEOUT:-900}"   # seconds
+# Debug: dump the RoboTwin client's Python stacks into seed_<s>.log every N s.
+STACK_DUMP_EVERY="${STACK_DUMP_EVERY:-}"
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
 
-# One episode only, for now.
+# One episode per seed.
 export ROBOTWIN_TEST_NUM=1
 export ROBOTWIN_PATH ROBOTWIN_PYTHON
 
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 [[ -d "${CKPT_DIR}" ]] || { echo "[ERROR] CKPT_DIR not found: ${CKPT_DIR}" >&2; exit 1; }
+
+OUT_DIR="$(pwd)/outputs/robotwin_seed_scan/${SLURM_JOB_ID:-local}"
+mkdir -p "${OUT_DIR}"
+SCAN_TSV="${OUT_DIR}/scan.tsv"
+printf 'seed\tscene_seed\tsuccess\tsteps\tstatus\n' > "${SCAN_TSV}"
 
 # GPU nodes can be shared between jobs, so derive the port from the job id
 # instead of using the fixed default 8848.
@@ -52,11 +71,11 @@ conda activate "${ENV_NAME}"
 
 echo "node         : $(hostname)"
 echo "checkpoint   : ${CKPT_DIR}"
-echo "task         : ${TASK} (${TASK_CONFIG}), episodes=${ROBOTWIN_TEST_NUM}"
+echo "task         : ${TASK} (${TASK_CONFIG})"
+echo "seeds        : ${SEED_START}..$((SEED_START + NUM_SEEDS - 1)), stop at first fail=${STOP_AT_FIRST_FAIL}, timeout=${EPISODE_TIMEOUT}s"
 echo "server       : ws://${HOST}:${PORT}, log=${SERVER_LOG}"
+echo "output       : ${SCAN_TSV}"
 nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv
-# Rendering diagnostics, useful if SAPIEN fails at import.
-ls /usr/share/vulkan/icd.d /usr/share/glvnd/egl_vendor.d 2>&1 || true
 
 # ── Policy server (background) ───────────────────────────────────────────────
 bash scripts/deploy.sh "${CKPT_DIR}" --device cuda:0 --host "${HOST}" --port "${PORT}" \
@@ -86,13 +105,56 @@ until (exec 3<>"/dev/tcp/${HOST}/${PORT}") 2>/dev/null; do
 done
 echo "[INFO] Policy server up after $((SECONDS - start))s."
 
-# ── RoboTwin client ──────────────────────────────────────────────────────────
-# gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
-set +e
-bash benchmarks/robotwin/single_eval.sh "${TASK}" "${TASK_CONFIG}" openwam 0 "${PORT}" "${HOST}"
-status=$?
-set -e
+# ── Seed scan ────────────────────────────────────────────────────────────────
+failing=()
+for ((seed = SEED_START; seed < SEED_START + NUM_SEEDS; seed++)); do
+    if ! kill -0 "${server_pid}" 2>/dev/null; then
+        echo "[ERROR] Policy server died before seed ${seed}. Last lines of ${SERVER_LOG}:" >&2
+        tail -n 50 "${SERVER_LOG}" >&2
+        exit 1
+    fi
 
-echo "[INFO] single_eval.sh exited with status ${status}"
-echo "[INFO] RoboTwin results: ${ROBOTWIN_PATH}/eval_result/"
-exit "${status}"
+    log="${OUT_DIR}/seed_${seed}.log"
+    # gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
+    set +e
+    client_env=()
+    if [[ -n "${STACK_DUMP_EVERY}" ]]; then
+        client_env=(STACK_DUMP_EVERY="${STACK_DUMP_EVERY}" PYTHONPATH="$(pwd)/utils/debug:${PYTHONPATH:-}")
+    fi
+    # timeout signals the whole process group, so the RoboTwin python dies too.
+    env "${client_env[@]}" timeout --kill-after=30 "${EPISODE_TIMEOUT}" \
+        bash utils/single_eval_seed.sh "${TASK}" "${TASK_CONFIG}" "openwam_scan_seed${seed}" 0 "${PORT}" "${HOST}" "${seed}" \
+        > "${log}" 2>&1
+    status=$?
+    set -e
+    if (( status == 124 || status == 137 )); then
+        echo "[WARN] seed ${seed} timed out after ${EPISODE_TIMEOUT}s" >&2
+    fi
+
+    # RoboTwin prints "Success rate: <succ>/<total> ... current seed: <scene seed>".
+    clean="$(sed 's/\x1b\[[0-9;]*m//g' "${log}")"
+    succ="$(grep -oE 'Success rate: [0-9]+/[0-9]+' <<< "${clean}" | tail -n 1 | sed -E 's#.*: ([0-9]+)/.*#\1#' || true)"
+    scene="$(grep -oE 'current seed: [0-9]+' <<< "${clean}" | tail -n 1 | grep -oE '[0-9]+$' || true)"
+    steps="$(grep -oE 'step: [0-9]+ / [0-9]+' <<< "${clean}" | tail -n 1 | sed -E 's#step: ([0-9]+ / [0-9]+)#\1#; s# ##g' || true)"
+    printf '%s\t%s\t%s\t%s\t%s\n' "${seed}" "${scene:-}" "${succ:-}" "${steps:-}" "${status}" >> "${SCAN_TSV}"
+    echo "[INFO] seed ${seed}: scene=${scene:-n/a} success=${succ:-n/a} steps=${steps:-n/a} status=${status}"
+
+    if (( status != 0 )) || [[ -z "${succ}" ]]; then
+        echo "[WARN] seed ${seed} did not finish; see ${log}" >&2
+        tail -n 20 "${log}" >&2
+        continue
+    fi
+    if (( succ == 0 )); then
+        failing+=("${seed}")
+        echo "[INFO] >>> FAILING SEED: ${seed} (scene seed ${scene})"
+        if (( STOP_AT_FIRST_FAIL == 1 )); then break; fi
+    fi
+done
+
+if (( ${#failing[@]} > 0 )); then
+    echo "[INFO] Failing seeds: ${failing[*]}"
+    echo "[INFO] Rerun PCA from the first one with:"
+    echo "  sbatch --export=ALL,TASK=${TASK},TASK_CONFIG=${TASK_CONFIG},SCENE_SEED=${failing[0]} jobs/robotwin_pca.job"
+else
+    echo "[INFO] No failing seed in ${SEED_START}..$((SEED_START + NUM_SEEDS - 1)); see ${SCAN_TSV}"
+fi

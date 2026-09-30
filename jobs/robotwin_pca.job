@@ -26,6 +26,7 @@
 # Submit from the repo root (default M = 10 x 10 = 100):
 #   sbatch jobs/robotwin_pca.job
 #   sbatch --export=ALL,RUNS_PER_TASK=20 --array=0-4 jobs/robotwin_pca.job
+#   sbatch --export=ALL,SCENE_SEED=<failing seed> jobs/robotwin_pca.job
 # (Snellius does not forward a `VAR=... sbatch` prefix; use --export=ALL,VAR=...)
 # Then plot with jobs/robotwin_pca_plot.job.
 
@@ -33,16 +34,19 @@ set -euo pipefail
 
 ROBOTWIN_PATH="${ROBOTWIN_PATH:-/gpfs/home6/opechler/RoboTwin}"
 ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
-CKPT_DIR="${CKPT_DIR:-assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Sim-RoboTwin-Full}"
+CKPT_DIR="${CKPT_DIR:-/scratch-shared/opechler/openwam_ckpt/OpenWAM-Alpha-Sim-RoboTwin-Clean2Random}"
 ENV_NAME="${ENV_NAME:-openwam}"
-TASK="${TASK:-open_microwave}"
-TASK_CONFIG="${TASK_CONFIG:-demo_clean}"
-RUNS_PER_TASK="${RUNS_PER_TASK:-25}"
+TASK="${TASK:-adjust_bottle}"
+TASK_CONFIG="${TASK_CONFIG:-demo_randomized}"
+RUNS_PER_TASK="${RUNS_PER_TASK:-15}"
+# RoboTwin seed of the starting scene (e.g. a failing seed found by
+# jobs/robotwin_single_eval.job); 0 = the default scene.
+SCENE_SEED="${SCENE_SEED:-3}"
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
 
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 
-# One episode per rerun, always the same one (seed 0) -> same starting point.
+# One episode per rerun, always the same one (SCENE_SEED) -> same starting point.
 export ROBOTWIN_TEST_NUM=1
 export ROBOTWIN_PATH ROBOTWIN_PYTHON
 
@@ -76,7 +80,7 @@ conda activate "${ENV_NAME}"
 echo "node         : $(hostname)"
 echo "array task   : ${TASK_ID} (array job ${SLURM_ARRAY_JOB_ID:-local}), reruns=${RUNS_PER_TASK}"
 echo "checkpoint   : ${CKPT_DIR}"
-echo "task         : ${TASK} (${TASK_CONFIG}), episodes per rerun=${ROBOTWIN_TEST_NUM}"
+echo "task         : ${TASK} (${TASK_CONFIG}), scene seed=${SCENE_SEED}, episodes per rerun=${ROBOTWIN_TEST_NUM}"
 echo "server       : ws://${HOST}:${PORT}, log=${SERVER_LOG}"
 echo "output       : ${OUT_DIR}"
 nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv
@@ -127,7 +131,7 @@ for ((r = 0; r < RUNS_PER_TASK; r++)); do
     echo "[INFO] run ${run} ($((r + 1))/${RUNS_PER_TASK})"
     # gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
     set +e
-    bash benchmarks/robotwin/single_eval.sh "${TASK}" "${TASK_CONFIG}" "openwam_pca_run${run}" 0 "${PORT}" "${HOST}" \
+    bash utils/single_eval_seed.sh "${TASK}" "${TASK_CONFIG}" "openwam_pca_run${run}" 0 "${PORT}" "${HOST}" "${SCENE_SEED}" \
         > "${run_dir}/client.log" 2>&1
     status=$?
     set -e
