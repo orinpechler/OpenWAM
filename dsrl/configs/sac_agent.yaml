@@ -12,7 +12,8 @@ _target_: dsrl.sac_agent.SACAgent
 _partial_: true
 
 horizon: ???                 # required: time steps of the diffusion policy's action noise
-gamma: 0.99                  # per-transition (= per executed chunk) discount
+executed_steps: null         # actions executed per chunk (= one transition); null: the full horizon
+gamma: 0.99                  # per-transition (= per executed chunk) discount, ~ gamma_step ** executed_steps
 tau: 0.005                   # Polyak rate for the action-critic targets
 batch_size: 256
 gradient_steps: 20           # per environment timestep: N action-critic steps and N policy steps

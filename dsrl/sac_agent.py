@@ -58,7 +58,8 @@ class SACAgent:
             5. temperature alpha                            (temperature_loss)
 
     ``gamma`` is the per-transition discount; one transition is one executed
-    chunk, so this is typically gamma_step ** executed_chunk_length.
+    chunk of ``executed_steps`` actions (default: the full ``horizon``), so this
+    is typically gamma_step ** executed_steps.
 
     wandb: pass an initialized run as ``wandb_run`` to log the loss metrics after
     every ``update`` (each averaged over the steps of its phase, against
@@ -72,8 +73,9 @@ class SACAgent:
         q_noise: nn.Module | Sequence[nn.Module],
         replay_buffer: ReplayBuffer,
         wam: "BaseWAMArchitecture",
-        wam_inputs_fn: WAMInputsFn,
         horizon: int,
+        wam_inputs_fn: WAMInputsFn | None = None,
+        executed_steps: int | None = None,
         gamma: float = 0.99,
         tau: float = 0.005,
         batch_size: int = 256,
@@ -93,6 +95,9 @@ class SACAgent:
     ):
         self.device = torch.device(device)
         self.horizon = horizon
+        self.executed_steps = horizon if executed_steps is None else executed_steps
+        if not 1 <= self.executed_steps <= horizon:
+            raise ValueError(f"executed_steps must be in [1, horizon={horizon}], got {executed_steps}")
         self.noise_dim = actor.output_dim
         self.gamma = gamma
         self.tau = tau
@@ -145,30 +150,47 @@ class SACAgent:
         return noise.unsqueeze(1).expand(-1, self.horizon, -1)
 
     @torch.no_grad()
-    def _action_fn(self, obs: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-        """Steered WAM as the losses see it: pi_dp(s, w), returning (B, T, raw_action_dim).
+    def decode(self, wam_inputs: Sequence[dict], noise: torch.Tensor) -> torch.Tensor:
+        """Steered WAM pi_dp(s, w) -> executed chunks (B, executed_steps, raw_action_dim), float32.
 
-        ``generate`` is batch-1, so this runs one call per sample, with w
-        replicated over time as the initial action noise. The video noise is
-        still OpenWAM's own seeded draw, and the video is never decoded.
+        ``wam_inputs[i]`` are the ``generate`` kwargs of sample i. ``generate`` is
+        batch-1, so this runs one call per sample, with w replicated over time as
+        the initial action noise; the video noise is still OpenWAM's own seeded
+        draw and the video is never decoded. Only the first ``executed_steps``
+        actions of each chunk are kept, matching what the environment executes.
         """
         chunks = []
-        for o, n in zip(obs, self.expand_noise(noise)):
-            out = self.wam.generate(**self.wam_inputs_fn(o), action_noise=n, decode_video=False)
-            chunks.append(torch.as_tensor(out["actions"]))
-        return torch.stack(chunks).to(device=obs.device, dtype=obs.dtype)
+        for inputs, n in zip(wam_inputs, self.expand_noise(noise)):
+            # The DiT velocity cache holds the previous generation's predictions.
+            if inputs.get("dit_cache") is not None:
+                inputs["dit_cache"].reset()
+            out = self.wam.generate(**inputs, action_noise=n, decode_video=False)
+            chunks.append(torch.as_tensor(out["actions"])[: self.executed_steps])
+        return torch.stack(chunks).to(device=self.device, dtype=torch.float32)
+
+    def _action_fn(self, obs: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
+        """pi_dp(s, w) as the losses see it, with each state's WAM inputs from ``wam_inputs_fn``."""
+        if self.wam_inputs_fn is None:
+            raise RuntimeError("updates need wam_inputs_fn to rebuild the WAM inputs of replayed states")
+        return self.decode([self.wam_inputs_fn(o) for o in obs], noise)
 
     @torch.no_grad()
-    def act(self, obs: torch.Tensor, deterministic: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+    def act(
+        self, obs: torch.Tensor, wam_inputs: Sequence[dict] | None = None, deterministic: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample latent noise for a batch of observations (B, obs_dim) and decode it.
 
-        Returns (action_chunk, noise): the diffusion policy's output and the
-        per-dimension noise w of shape (B, noise_dim) that produced it.
-        ``deterministic`` uses the actor's (squashed) mean instead of a sample.
+        ``wam_inputs`` are the samples' ``generate`` kwargs; without them they come
+        from ``wam_inputs_fn``. Returns (action_chunk, noise): the executed chunk
+        (B, executed_steps, raw_action_dim) and the per-dimension noise w
+        (B, noise_dim) that produced it. ``deterministic`` uses the actor's
+        (squashed) mean instead of a sample.
         """
         obs = obs.to(self.device)
         noise = self.actor.deterministic(obs) if deterministic else self.actor.sample(obs)[0]
-        return self._action_fn(obs, noise), noise
+        if wam_inputs is None:
+            return self._action_fn(obs, noise), noise
+        return self.decode(wam_inputs, noise), noise
 
     def add_transition(self, obs, action, reward, next_obs, done, noise=None) -> None:
         """Store one or a batch of chunk-level transitions (see ``ReplayBuffer.add``)."""
