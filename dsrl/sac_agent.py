@@ -1,6 +1,6 @@
 import copy
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,6 +15,11 @@ from dsrl.replay_buffer import ReplayBuffer
 if TYPE_CHECKING:
     # Type-only: importing OpenWAM pulls in its video/VLM backbones.
     from openwam.model.architectures import BaseWAMArchitecture
+
+# Maps one observation (obs_dim,) to the keyword arguments of ``BaseWAMArchitecture.generate``
+# for that state (schedule, prompt, first_frame_image, proprio, num_frames, ...), excluding
+# ``action_noise`` and ``decode_video``, which the agent sets itself.
+WAMInputsFn = Callable[[torch.Tensor], dict]
 
 # Loss-info prefixes; each becomes a wandb section plotted against the agent's update step.
 _METRIC_SECTIONS = ("action_critic", "noise_critic", "actor", "temperature")
@@ -40,14 +45,14 @@ class SACAgent:
     noise_dim), so the actor steers a single per-dimension noise rather than the
     full chunk-sized noise space.
 
-    ``update`` is the training for one environment timestep: first the critics,
-    then the policy, each for ``gradient_steps`` gradient steps on fresh batches,
-    with one optimizer per network:
+    ``update`` is the training for one environment timestep: three phases run in
+    order, each gradient step on a fresh batch, with one optimizer per network:
 
-        critic phase (x gradient_steps)
+        action-critic phase (x gradient_steps)
             1. action critic Q^A    TD on executed chunks   (action_critic_loss)
-            2. noise critic Q^W     distilled from Q^A      (noise_critic_loss)
-            3. Polyak update of the Q^A targets every ``target_update_interval`` critic steps
+            2. Polyak update of the Q^A targets every ``target_update_interval`` critic steps
+        noise-critic phase (x noise_critic_steps)
+            3. noise critic Q^W     distilled from Q^A      (noise_critic_loss)
         policy phase (x gradient_steps)
             4. latent actor pi^W    maximize Q^W + entropy  (actor_loss)
             5. temperature alpha                            (temperature_loss)
@@ -56,7 +61,7 @@ class SACAgent:
     chunk, so this is typically gamma_step ** executed_chunk_length.
 
     wandb: pass an initialized run as ``wandb_run`` to log the loss metrics after
-    every ``update`` (each averaged over its ``gradient_steps`` steps, against
+    every ``update`` (each averaged over the steps of its phase, against
     ``agent/update_step``) and to upload checkpoints as model artifacts.
     """
 
@@ -67,11 +72,13 @@ class SACAgent:
         q_noise: nn.Module | Sequence[nn.Module],
         replay_buffer: ReplayBuffer,
         wam: "BaseWAMArchitecture",
+        wam_inputs_fn: WAMInputsFn,
         horizon: int,
         gamma: float = 0.99,
         tau: float = 0.005,
         batch_size: int = 256,
         gradient_steps: int = 20,
+        noise_critic_steps: int = 10,
         actor_lr: float = 3e-4,
         critic_lr: float = 3e-4,
         noise_critic_lr: float = 3e-4,
@@ -90,9 +97,10 @@ class SACAgent:
         self.gamma = gamma
         self.tau = tau
         self.batch_size = batch_size
-        if gradient_steps < 1:
-            raise ValueError("gradient_steps must be at least 1")
+        if gradient_steps < 1 or noise_critic_steps < 1:
+            raise ValueError("gradient_steps and noise_critic_steps must be at least 1")
         self.gradient_steps = gradient_steps
+        self.noise_critic_steps = noise_critic_steps
         self.target_entropy = -float(self.noise_dim) if target_entropy is None else target_entropy
         self.target_reduction = target_reduction
         self.target_update_interval = target_update_interval
@@ -105,6 +113,7 @@ class SACAgent:
         self.log_alpha = torch.tensor(float(init_alpha), device=self.device).log().requires_grad_(True)
         self.replay_buffer = replay_buffer
         self.wam = wam
+        self.wam_inputs_fn = wam_inputs_fn
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = torch.optim.Adam(self.q_action.parameters(), lr=critic_lr)
@@ -112,7 +121,7 @@ class SACAgent:
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=alpha_lr)
 
         self.update_step = 0  # update() calls, i.e. trained environment timesteps
-        self.critic_step = 0  # critic gradient steps, which drive the target updates
+        self.critic_step = 0  # action-critic gradient steps, which drive the target updates
         self.wandb_run = wandb_run
         if wandb_run is not None:
             wandb_run.define_metric(_STEP_METRIC)
@@ -135,11 +144,19 @@ class SACAgent:
         """Replicate per-dimension noise (B, noise_dim) over time -> (B, horizon, noise_dim)."""
         return noise.unsqueeze(1).expand(-1, self.horizon, -1)
 
+    @torch.no_grad()
     def _action_fn(self, obs: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-        """Steered diffusion policy as the losses see it: pi_dp(s, w) with w replicated over time."""
-        # TODO: BaseWAMArchitecture's __call__ is its training forward, and generate() draws
-        # its own action noise; replace this with WAM generation from the injected noise.
-        return self.wam(obs, self.expand_noise(noise))
+        """Steered WAM as the losses see it: pi_dp(s, w), returning (B, T, raw_action_dim).
+
+        ``generate`` is batch-1, so this runs one call per sample, with w
+        replicated over time as the initial action noise. The video noise is
+        still OpenWAM's own seeded draw, and the video is never decoded.
+        """
+        chunks = []
+        for o, n in zip(obs, self.expand_noise(noise)):
+            out = self.wam.generate(**self.wam_inputs_fn(o), action_noise=n, decode_video=False)
+            chunks.append(torch.as_tensor(out["actions"]))
+        return torch.stack(chunks).to(device=obs.device, dtype=obs.dtype)
 
     @torch.no_grad()
     def act(self, obs: torch.Tensor, deterministic: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
@@ -176,24 +193,31 @@ class SACAgent:
     def _sample_batch(self) -> dict[str, torch.Tensor]:
         return self.replay_buffer.sample(self.batch_size, device=self.device)
 
-    def _critic_step(self) -> dict[str, torch.Tensor]:
-        """One gradient step of Q^A then Q^W on a fresh batch, followed by the target update."""
-        batch = self._sample_batch()
-
+    def _action_critic_step(self) -> dict[str, torch.Tensor]:
+        """One gradient step of Q^A on a fresh batch, followed by the target update."""
         loss, info = action_critic_loss(
-            batch, self.q_action, self.q_action_target, self.actor, self._action_fn, self.gamma, self.target_reduction
+            self._sample_batch(),
+            self.q_action,
+            self.q_action_target,
+            self.actor,
+            self._action_fn,
+            self.gamma,
+            self.target_reduction,
         )
         self._step(self.critic_optimizer, loss)
-
-        loss, noise_info = noise_critic_loss(
-            batch, self.q_noise, self.q_action, self._action_fn, self.noise_dim, self.target_reduction
-        )
-        self._step(self.noise_critic_optimizer, loss)
 
         self.critic_step += 1
         if self.critic_step % self.target_update_interval == 0:
             self.soft_update_targets()
-        return {**info, **noise_info}
+        return info
+
+    def _noise_critic_step(self) -> dict[str, torch.Tensor]:
+        """One gradient step of Q^W on a fresh batch."""
+        loss, info = noise_critic_loss(
+            self._sample_batch(), self.q_noise, self.q_action, self._action_fn, self.noise_dim, self.target_reduction
+        )
+        self._step(self.noise_critic_optimizer, loss)
+        return info
 
     def _policy_step(self) -> dict[str, torch.Tensor]:
         """One gradient step of the latent actor then the temperature on a fresh batch."""
@@ -211,21 +235,27 @@ class SACAgent:
     def update(self) -> dict[str, float]:
         """Train for one environment timestep.
 
-        Runs ``gradient_steps`` critic steps (Q^A, Q^W, target update), then
-        ``gradient_steps`` policy steps (actor, temperature), each on its own
-        batch. Once both phases are done, every metric is averaged over its
-        phase's ``gradient_steps`` steps, logged to wandb (if a run is set) and
-        returned. The replay buffer must hold at least one transition; warm-up
-        gating is left to the training loop.
+        Runs ``gradient_steps`` action-critic steps (Q^A, target update), then
+        ``noise_critic_steps`` noise-critic steps (Q^W), then ``gradient_steps``
+        policy steps (actor, temperature), each on its own batch. Once all phases
+        are done, every metric is averaged over the steps of its phase, logged to
+        wandb (if a run is set) and returned. The replay buffer must hold at
+        least one transition; warm-up gating is left to the training loop.
         """
-        sums: dict[str, float] = defaultdict(float)
-        for step in (self._critic_step, self._policy_step):
-            for _ in range(self.gradient_steps):
+        metrics: dict[str, float] = {}
+        phases = (
+            (self._action_critic_step, self.gradient_steps),
+            (self._noise_critic_step, self.noise_critic_steps),
+            (self._policy_step, self.gradient_steps),
+        )
+        for step, num_steps in phases:
+            sums: dict[str, float] = defaultdict(float)
+            for _ in range(num_steps):
                 for k, v in step().items():
                     sums[k] += v.mean().item()
+            metrics.update({k: v / num_steps for k, v in sums.items()})
 
         self.update_step += 1
-        metrics = {k: v / self.gradient_steps for k, v in sums.items()}
         if self.wandb_run is not None:
             self.wandb_run.log({**metrics, _STEP_METRIC: self.update_step})
         return metrics

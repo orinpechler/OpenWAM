@@ -956,12 +956,16 @@ class DualSystemIDMArchitecture(BaseWAMArchitecture):
         prompt_embed_cache: Optional[dict] = None,
         proprio: Optional[Tensor] = None,
         active_action_mask: Optional[Tensor] = None,
+        action_noise: Optional[Tensor] = None,
     ) -> dict:
         """Two-stage IDM generation.
 
         Stage 1: Denoise video independently using the video DiT (no action).
         Stage 2: Freeze denoised video latents, denoise action with standard
                  MoT joint loop using the frozen video as condition.
+
+        ``action_noise`` replaces the seeded initial action noise, as in
+        ``BaseWAMArchitecture.generate``; the video noise is unaffected.
         """
         import time
 
@@ -1013,14 +1017,7 @@ class DualSystemIDMArchitecture(BaseWAMArchitecture):
         inputs_shared_with_proprio = self._append_proprio_context_token(dict(inputs_shared), proprio_arg)
 
         # Initialize latents
-        action_latents = torch.randn(
-            1,
-            action_num_frames - 1,
-            self.action_dim,
-            device=device,
-            dtype=dtype,
-            generator=torch.Generator(device=device).manual_seed(seed),
-        )
+        action_latents = self._initial_action_latents(action_noise, action_num_frames, seed, device, dtype)
 
         # Same inactive-dim pinning as BaseWAMArchitecture.generate: unsupervised
         # unified-action dims must stay on their analytic sigma * eps0 noise path.

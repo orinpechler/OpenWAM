@@ -1357,6 +1357,36 @@ class BaseWAMArchitecture(ABC, nn.Module):
             return None
         return inactive_action_dims
 
+    def _initial_action_latents(
+        self,
+        action_noise: Optional[Tensor],
+        action_num_frames: int,
+        seed: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Initial action noise for generation: ``action_noise`` if given, else seeded Gaussian noise.
+
+        ``action_noise`` lets a caller (e.g. a latent-noise RL policy) choose the
+        starting point of the action denoising. It must have shape
+        ``(action_num_frames - 1, action_dim)`` or ``(1, action_num_frames - 1, action_dim)``.
+        Only the action noise is replaced; the video noise still comes from ``seed``.
+        """
+        shape = (1, action_num_frames - 1, self.action_dim)
+        if action_noise is None:
+            return torch.randn(
+                *shape,
+                device=device,
+                dtype=dtype,
+                generator=torch.Generator(device=device).manual_seed(seed),
+            )
+        if action_noise.dim() == 2:
+            action_noise = action_noise.unsqueeze(0)
+        if tuple(action_noise.shape) != shape:
+            raise ValueError(f"action_noise must have shape {shape[1:]} or {shape}; got {tuple(action_noise.shape)}.")
+        # Copy so the denoising loop never writes into the caller's tensor.
+        return action_noise.to(device=device, dtype=dtype, copy=True)
+
     @torch.no_grad()
     def generate(
         self,
@@ -1385,6 +1415,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
         cfg_scale: float = 1.0,
         cfg_merge: bool = False,
         active_action_mask: Optional[Tensor] = None,
+        action_noise: Optional[Tensor] = None,
         **extra_pipeline_inputs: Any,
     ) -> dict:
         """Execute joint video-action denoising driven by a schedule.
@@ -1403,6 +1434,10 @@ class BaseWAMArchitecture(ABC, nn.Module):
                 benchmark being generated. Inactive unified-action dimensions
                 stay on their analytic zero-padding noise path. When omitted,
                 the mask is inferred from the attached unified normalizer.
+            action_noise: Optional initial action noise of shape
+                ``(action_num_frames - 1, action_dim)`` (a leading batch dim of
+                1 is allowed). Replaces the seeded Gaussian action noise; the
+                video noise is unaffected and still drawn from ``seed``.
 
         Returns:
             dict with ``video`` (list of PIL images or None) and
@@ -1485,14 +1520,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
                 raise ValueError("use_proprioception=True requires `proprio` during generation.")
             inputs_shared["proprio"] = proprio.to(device=device, dtype=dtype)
 
-        action_latents = torch.randn(
-            1,
-            action_num_frames - 1,
-            self.action_dim,
-            device=device,
-            dtype=dtype,
-            generator=torch.Generator(device=device).manual_seed(seed),
-        )
+        action_latents = self._initial_action_latents(action_noise, action_num_frames, seed, device, dtype)
 
         # Unified-action checkpoints scatter raw actions into a larger zero-padded
         # space.  The inactive dimensions may be excluded from the training loss,
