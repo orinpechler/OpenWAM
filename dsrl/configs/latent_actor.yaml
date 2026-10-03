@@ -1,0 +1,19 @@
+# Latent actor (dsrl/models/latent_actor.py): MLP -> diagonal Gaussian (mean, log_std),
+# sampled with the reparameterization trick and optionally tanh-squashed.
+# Values below are the class defaults. Build it with hydra.utils.instantiate(cfg).
+
+_target_: dsrl.models.latent_actor.LatentActor
+
+input_dim: ???             # required: input width (e.g. observation features)
+output_dim: ???            # required: width of the mean / log_std vectors
+num_layers: 3              # number of hidden layers
+hidden_dim: 2048           # width of every hidden layer
+activation:                # hidden activation, passed as a class (default torch.nn.Tanh)
+  _target_: hydra.utils.get_class
+  path: torch.nn.Tanh
+layer_norm: true           # LayerNorm after each hidden Linear, before the activation
+set_range: true            # squash samples with tanh into (-range_scale, range_scale)
+range_scale: 1.0
+log_std_min: -20.0         # log_std is clamped to [log_std_min, log_std_max]
+log_std_max: 2.0
+orthogonal_init: false     # true: orthogonal init with near-zero heads (initial output ~ N(0, I))
