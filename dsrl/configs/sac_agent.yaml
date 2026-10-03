@@ -1,0 +1,28 @@
+# DSRL-NA SAC agent (dsrl/sac_agent.py): hyperparameters only. Values below are the
+# class defaults. Instantiation is partial because the networks, replay buffer and
+# frozen diffusion policy are built at runtime:
+#   make_agent = hydra.utils.instantiate(cfg)
+#   agent = make_agent(actor=..., q_action=[...], q_noise=..., replay_buffer=...,
+#                      wam=..., wandb_run=run)
+# The latent actor's output_dim (and q_noise's action_dim) is the diffusion policy's
+# per-step action width; the actor's noise is replicated over `horizon` steps.
+
+_target_: dsrl.sac_agent.SACAgent
+_partial_: true
+
+horizon: ???                 # required: time steps of the diffusion policy's action noise
+gamma: 0.99                  # per-transition (= per executed chunk) discount
+tau: 0.005                   # Polyak rate for the action-critic targets
+batch_size: 256
+gradient_steps: 20           # per environment timestep: N critic steps, then N policy steps
+actor_lr: 3.0e-4
+critic_lr: 3.0e-4            # action critic Q^A
+noise_critic_lr: 3.0e-4      # noise critic Q^W
+alpha_lr: 3.0e-4
+init_alpha: 1.0              # initial SAC entropy coefficient
+target_entropy: null         # null: -noise_dim
+target_reduction: min        # how critic ensembles are reduced: min (clipped double-Q) or mean
+target_update_interval: 1    # target Polyak update every N critic gradient steps
+max_grad_norm: null          # null: no gradient clipping
+device: cuda
+# wandb: metrics are logged after every update(), averaged over its gradient_steps steps.
