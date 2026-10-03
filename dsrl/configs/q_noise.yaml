@@ -1,0 +1,17 @@
+# Latent-noise critic Q^W(s, w) (dsrl/models/q_value.py), as in DSRL-NA: trained
+# by distillation, regressing Q^W(s, w) onto Q^A(s, pi_dp(s, w)) for noise
+# w ~ N(0, I), where pi_dp is the frozen diffusion policy. The latent actor
+# maximizes this critic.
+# Values below are the class defaults. Build it with hydra.utils.instantiate(cfg).
+
+_target_: dsrl.models.q_value.QValue
+
+input_dim: ???             # required: state/observation feature width
+action_dim: ???            # required: width of the (flattened) latent noise w = latent actor's output_dim
+num_layers: 3              # number of hidden layers
+hidden_dim: 2048           # width of every hidden layer
+activation:                # hidden activation, passed as a class (default torch.nn.Tanh)
+  _target_: hydra.utils.get_class
+  path: torch.nn.Tanh
+layer_norm: true           # LayerNorm after each hidden Linear, before the activation
+orthogonal_init: false     # true: orthogonal hidden layers (gain sqrt 2), output head gain 1
