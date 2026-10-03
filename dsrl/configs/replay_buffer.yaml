@@ -1,0 +1,12 @@
+# Replay buffer (dsrl/replay_buffer.py): fixed-capacity circular buffer of
+# chunk-level transitions (obs, action, reward, next_obs, done[, noise]),
+# sampled uniformly with replacement.
+# Values below are the class defaults. Build it with hydra.utils.instantiate(cfg).
+
+_target_: dsrl.replay_buffer.ReplayBuffer
+
+capacity: ???              # required: maximum number of transitions kept
+obs_dim: ???               # required: state/observation feature width (critics' input_dim)
+action_dim: ???            # required: width of the flattened executed action chunk (action critic's action_dim)
+noise_dim: null            # width of the latent noise w (latent actor's output_dim); null = don't store noise
+device: cpu                # where storage is preallocated (e.g. cuda to keep sampling on the GPU)
