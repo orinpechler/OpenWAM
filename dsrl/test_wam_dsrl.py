@@ -11,12 +11,13 @@ Only the OpenWAM checkpoint and the actor are loaded: the DSRL checkpoint is
 memory-mapped and only its ``actor`` weights are read (no critics, optimizers or
 replay buffer). The actor architecture, encoder layer and WAM deploy settings
 come from the training run's config, so the WAM runs exactly as in training:
-    local checkpoint    <run dir>/checkpoints/agent.pt -> <run dir>/.hydra/config.yaml
-    wandb artifact      "<entity>/<project>/dsrl-agent-<run id>:<alias>" -> config of the run that logged it
+    local checkpoint    <checkpoint dir>/{agent_ep<N>,final}.pt -> <checkpoint dir>/config.yaml
+                        (older runs: <run dir>/checkpoints/agent.pt -> <run dir>/.hydra/config.yaml)
+    wandb artifact      "<entity>/<project>/dsrl-agent-<run id>:final" -> config of the run that logged it
 or ``--train-config`` to point at the config explicitly.
 
 Usage:
-    python dsrl/test_wam_dsrl.py --ckpt-dir <OpenWAM checkpoint dir> --policy-ckpt <agent.pt | artifact> \
+    python dsrl/test_wam_dsrl.py --ckpt-dir <OpenWAM checkpoint dir> --policy-ckpt <final.pt | artifact> \
         [--port 8848] [--device cuda:0]
 """
 
@@ -79,10 +80,13 @@ def resolve_policy_checkpoint(ref: str, train_config: str | None) -> tuple[Path,
     """Local path of the DSRL checkpoint and the config of the run that trained it."""
     path = Path(ref)
     if path.exists():
-        config_path = Path(train_config) if train_config else path.parent.parent / ".hydra" / "config.yaml"
-        if not config_path.exists():
-            raise FileNotFoundError(f"training config not found at {config_path}; pass --train-config")
-        return path, OmegaConf.load(config_path)
+        if train_config:
+            return path, OmegaConf.load(train_config)
+        candidates = (path.parent / "config.yaml", path.parent.parent / ".hydra" / "config.yaml")
+        for config_path in candidates:
+            if config_path.exists():
+                return path, OmegaConf.load(config_path)
+        raise FileNotFoundError(f"training config not found at {' or '.join(map(str, candidates))}; pass --train-config")
 
     import wandb
 
@@ -149,7 +153,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--ckpt-dir", required=True, help="OpenWAM checkpoint directory.")
     parser.add_argument("--ckpt-name", default=None, help="checkpoint_step_*.safetensors in --ckpt-dir; default: latest.")
-    parser.add_argument("--policy-ckpt", required=True, help="DSRL agent.pt or wandb artifact ref.")
+    parser.add_argument("--policy-ckpt", required=True, help="DSRL checkpoint (.pt) or wandb artifact ref.")
     parser.add_argument("--train-config", default=None, help="Training run config.yaml; default: found from --policy-ckpt.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--host", default="0.0.0.0", help="WebSocket bind host.")

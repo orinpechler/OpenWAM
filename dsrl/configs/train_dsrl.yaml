@@ -39,10 +39,13 @@ train:
   stop_on_disconnect: true   # stop training when the RoboTwin client disconnects
 
 checkpoint:
-  dir: ${hydra:runtime.output_dir}/checkpoints
-  every_episodes: 50         # save (and upload to wandb) every N training episodes; 0: only at the end
-  upload: true
-  resume: null               # local .pt or wandb artifact ref ("dsrl-agent-<run id>:latest") to start from
+  # Shared scratch (not node-local $TMPDIR, which is wiped when the job ends), paired with the
+  # run dir by its timestamp. Holds agent_ep<N>.pt, final.pt and the run's config.yaml, which
+  # dsrl/test_wam_dsrl.py reads. Scratch is purged periodically; final.pt also goes to wandb.
+  dir: /scratch-shared/${oc.env:USER}/dsrl/${now:%Y-%m-%d}/${now:%H-%M-%S}/checkpoints
+  every_episodes: 100        # keep agent_ep<N>.pt every N training episodes, local only; 0: only final.pt
+  upload_final: true         # upload final.pt to wandb (artifact dsrl-agent-<run id>, alias final)
+  resume: null               # local .pt or wandb artifact ref ("<entity>/<project>/dsrl-agent-<run id>:final")
 
 wandb:
   enabled: true

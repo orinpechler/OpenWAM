@@ -10,9 +10,11 @@ gradient rounds), run while the simulator waits for the reply. Updates never
 run the WAM, so they are cheap next to acting.
 
 Every ``eval_every_episodes``-th episode acts with the actor's mean and is not
-stored. Checkpoints go to ``checkpoint.dir/agent.pt`` and, with wandb, to the
-run's ``dsrl-agent-<run id>`` model artifact. SIGINT / SIGTERM stop training
-after the current message and save a final checkpoint.
+stored. Checkpoints go to ``checkpoint.dir`` on shared scratch, next to the
+run's resolved ``config.yaml``: ``agent_ep<N>.pt`` every ``every_episodes``
+training episodes (local only) and ``final.pt`` at the end, which is also
+uploaded as the run's ``dsrl-agent-<run id>`` model artifact (alias ``final``).
+SIGINT / SIGTERM stop training after the current message and save final.pt.
 
 wandb sections:
     critic/*, actor/*, temperature/*   loss metrics, per agent update
@@ -42,6 +44,7 @@ import hydra  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
+from hydra.core.hydra_config import HydraConfig  # noqa: E402
 from hydra.utils import instantiate  # noqa: E402
 from omegaconf import DictConfig, OmegaConf  # noqa: E402
 
@@ -102,6 +105,14 @@ def num_params(module: nn.Module) -> int:
     return sum(p.numel() for p in module.parameters())
 
 
+def run_dir() -> Path:
+    """Hydra's output dir for this run (logs, .hydra, wandb files); the cwd outside Hydra."""
+    try:
+        return Path(HydraConfig.get().runtime.output_dir)
+    except ValueError:
+        return Path.cwd()
+
+
 def init_wandb(cfg: DictConfig):
     if not cfg.wandb.enabled or cfg.wandb.mode == "disabled":
         return None
@@ -117,7 +128,7 @@ def init_wandb(cfg: DictConfig):
         id=cfg.wandb.id,
         resume="allow" if cfg.wandb.id else None,
         config=OmegaConf.to_container(cfg, resolve=True),
-        dir=str(Path(cfg.checkpoint.dir).parent),
+        dir=str(run_dir()),
     )
     run.define_metric(_EPISODE_METRIC)
     for section in _EPISODE_SECTIONS:
@@ -174,6 +185,12 @@ class Trainer:
         )
         if cfg.checkpoint.resume:
             self._resume(str(cfg.checkpoint.resume))
+
+        # The checkpoint dir carries the run's config, so a checkpoint can be evaluated wherever it is.
+        self.checkpoint_dir = Path(cfg.checkpoint.dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        OmegaConf.save(cfg, self.checkpoint_dir / "config.yaml", resolve=True)
+        logger.info("Checkpoints and config in %s", self.checkpoint_dir)
 
         self.server = TrainingServer(
             self.engine,
@@ -268,7 +285,7 @@ class Trainer:
 
         every = self.cfg.checkpoint.every_episodes
         if not evaluating and every and self.train_episodes % every == 0:
-            self.save_checkpoint()
+            self.save_checkpoint(f"agent_ep{self.train_episodes:04d}.pt")
         if self._budget_reached():
             self._stop_requested = True
         self.server.deterministic = self._is_eval(self.episodes + 1)
@@ -316,11 +333,9 @@ class Trainer:
 
     # ------------------------------------------------------------------ checkpointing
 
-    def save_checkpoint(self, aliases: tuple[str, ...] = ()) -> None:
-        path = self.agent.save_checkpoint(
-            Path(self.cfg.checkpoint.dir) / "agent.pt", upload=self.cfg.checkpoint.upload, aliases=aliases
-        )
-        logger.info("Saved checkpoint %s (update step %d)", path, self.agent.update_step)
+    def save_checkpoint(self, name: str, upload: bool = False, aliases: tuple[str, ...] = ()) -> None:
+        path = self.agent.save_checkpoint(self.checkpoint_dir / name, upload=upload, aliases=aliases)
+        logger.info("Saved checkpoint %s (update step %d%s)", path, self.agent.update_step, ", uploading" if upload else "")
 
     # ------------------------------------------------------------------ serving
 
@@ -382,7 +397,7 @@ class Trainer:
         try:
             self.serve()
         finally:
-            self.save_checkpoint(aliases=("final",))
+            self.save_checkpoint("final.pt", upload=self.cfg.checkpoint.upload_final, aliases=("final",))
             if self.run is not None:
                 self.run.summary.update(
                     {

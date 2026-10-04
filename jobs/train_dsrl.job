@@ -14,6 +14,9 @@
 # open, then runs dsrl/data/robotwin/rollout.sh against it. Both share the GPU.
 # 15 minutes before the time limit the trainer gets SIGTERM, saves a final
 # checkpoint and finishes its wandb run.
+# Logs, .hydra and wandb files: outputs/dsrl/<date>/<time>/. Checkpoints (agent_ep<N>.pt,
+# final.pt) and the run's config.yaml: /scratch-shared/$USER/dsrl/<date>/<time>/checkpoints/;
+# only final.pt is uploaded to wandb.
 #
 # Submit from the repo root (extra arguments are Hydra overrides of train_dsrl.yaml):
 #   sbatch jobs/train_dsrl.job

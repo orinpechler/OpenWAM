@@ -16,7 +16,7 @@
 # ${CKPT_SETTING}. Server and simulator share the single allocated GPU.
 #
 # Submit from the repo root:
-#   POLICY_CKPT=outputs/dsrl/<date>/<time>/checkpoints/agent.pt sbatch jobs/test_wam_dsrl.job
+#   POLICY_CKPT=/scratch-shared/$USER/dsrl/<date>/<time>/checkpoints/final.pt sbatch jobs/test_wam_dsrl.job
 #   POLICY_CKPT=<entity>/openwam-dsrl/dsrl-agent-<run id>:final TASK=adjust_bottle sbatch jobs/test_wam_dsrl.job
 # Extra arguments are passed on to dsrl/test_wam_dsrl.py (e.g. --stochastic).
 
@@ -25,7 +25,7 @@ set -euo pipefail
 ROBOTWIN_PATH="${ROBOTWIN_PATH:-/gpfs/home6/opechler/RoboTwin}"
 ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
 CKPT_DIR="${CKPT_DIR:-assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Sim-RoboTwin-Full}"
-POLICY_CKPT="${POLICY_CKPT:?POLICY_CKPT must be a DSRL agent.pt or a wandb artifact ref}"
+POLICY_CKPT="${POLICY_CKPT:?POLICY_CKPT must be a DSRL checkpoint (.pt) or a wandb artifact ref}"
 ENV_NAME="${ENV_NAME:-openwam}"
 TASK="${TASK:-adjust_bottle}"
 TASK_CONFIG="${TASK_CONFIG:-demo_clean}"
