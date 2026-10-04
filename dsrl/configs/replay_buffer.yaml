@@ -1,9 +1,9 @@
-# Replay buffer (dsrl/replay_buffer.py): fixed-capacity circular buffer of
+# Replay buffer (dsrl/data/replay_buffer.py): fixed-capacity circular buffer of
 # chunk-level transitions (obs, action, reward, next_obs, done[, noise]),
 # sampled uniformly with replacement.
 # Values below are the class defaults. Build it with hydra.utils.instantiate(cfg).
 
-_target_: dsrl.replay_buffer.ReplayBuffer
+_target_: dsrl.data.replay_buffer.ReplayBuffer
 
 capacity: ???              # required: maximum number of transitions kept
 obs_dim: ???               # required: state/observation feature width (critics' input_dim)

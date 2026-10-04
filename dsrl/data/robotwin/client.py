@@ -1,6 +1,6 @@
 """RoboTwin policy module for DSRL: OpenWAM's RoboTwin client plus an ``episode_end`` message.
 
-RoboTwin loads it like any policy (``--policy_name dsrl.robotwin_client``); nothing
+RoboTwin loads it like any policy (``--policy_name dsrl.data.robotwin.client``); nothing
 on the RoboTwin side changes. Acting is delegated to
 ``benchmarks/robotwin/openwam2robotwin_interface.py``. After each action, the
 client reads RoboTwin's own episode state on the task object: ``eval_success``
@@ -9,11 +9,11 @@ against ``step_lim``. When the episode is over it sends
 
     {"type": "episode_end", "success": bool, "obs": <obs payload of the final observation>}
 
-so ``dsrl/robotwin_server.py`` can close the last chunk's transition. RoboTwin's
+so ``dsrl/data/robotwin/server.py`` can close the last chunk's transition. RoboTwin's
 loop stops right after that action, so this is the last message of the episode.
 
 Needs the OpenWAM repo root and ``benchmarks/robotwin`` on ``PYTHONPATH``
-(``dsrl/robotwin_rollout.sh`` sets both).
+(``dsrl/data/robotwin/rollout.sh`` sets both).
 """
 
 import numpy as np

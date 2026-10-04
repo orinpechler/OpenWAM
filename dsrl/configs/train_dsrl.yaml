@@ -1,5 +1,5 @@
 # DSRL-SAC training on RoboTwin (dsrl/train_dsrl.py). The script is the policy server:
-# it loads the WAM, serves dsrl/robotwin_client.py (run with dsrl/robotwin_rollout.sh)
+# it loads the WAM, serves dsrl/data/robotwin/client.py (run with dsrl/data/robotwin/rollout.sh)
 # and trains the SAC agent on the chunk-level transitions it collects.
 #   python dsrl/train_dsrl.py wam.ckpt_dir=<checkpoint dir> server.port=<port>
 # The component configs below are composed in; their ??? dims are filled in at runtime

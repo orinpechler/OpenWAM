@@ -2,7 +2,7 @@
 
 Drop-in for ``openwam.deploy.server.PolicyServer`` from the RoboTwin side: the
 same ``obs`` / ``reset`` / ``ping`` messages, plus one ``episode_end`` message
-sent by ``dsrl/robotwin_client.py``:
+sent by ``dsrl/data/robotwin/client.py``:
 
     Client -> {"type": "episode_end", "success": bool, "obs": <obs payload>}
     Server -> {"type": "episode_end_ack"}
@@ -34,8 +34,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import torch
 
-from dsrl.wam_encoder import WAMEncoder
-from dsrl.wam_inputs import WAMInputsBuilder
+from dsrl.models.wam_encoder import WAMEncoder
+from dsrl.models.wam_inputs import WAMInputsBuilder
 from openwam.deploy.obs_preprocess import ObsPreprocessor
 from openwam.deploy.server import (
     ACTION,

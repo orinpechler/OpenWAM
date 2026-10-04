@@ -1,12 +1,12 @@
 #!/bin/bash
-# Run RoboTwin episodes against the DSRL server (dsrl/robotwin_server.py).
+# Run RoboTwin episodes against the DSRL server (dsrl/data/robotwin/server.py).
 #
 # Same setup as benchmarks/robotwin/single_eval.sh, but RoboTwin loads the DSRL
-# client (dsrl/robotwin_client.py), which also reports each episode's end and
+# client (dsrl/data/robotwin/client.py), which also reports each episode's end and
 # success to the server, and it runs NUM_EPISODES episodes. RoboTwin itself is
 # used unchanged.
 #
-# Usage: bash dsrl/robotwin_rollout.sh <task_name> <task_config> <gpu_id> [port] [host]
+# Usage: bash dsrl/data/robotwin/rollout.sh <task_name> <task_config> <gpu_id> [port] [host]
 # Env:   ROBOTWIN_PATH, ROBOTWIN_PYTHON (required, as for single_eval.sh)
 #        NUM_EPISODES   episodes to run (default 100000, i.e. until stopped)
 #        SEED           RoboTwin seed index; episodes use seeds from 100000 * (1 + SEED).
@@ -15,11 +15,11 @@
 set -euo pipefail
 
 if [[ $# -lt 3 ]]; then
-    echo "Usage: bash dsrl/robotwin_rollout.sh <task_name> <task_config> <gpu_id> [port] [host]" >&2
+    echo "Usage: bash dsrl/data/robotwin/rollout.sh <task_name> <task_config> <gpu_id> [port] [host]" >&2
     exit 1
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BENCH_DIR="${REPO_ROOT}/benchmarks/robotwin"
 ROBOTWIN_PATH="${ROBOTWIN_PATH:?ROBOTWIN_PATH must be set to the RoboTwin repository root}"
 ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:?ROBOTWIN_PYTHON must point to the RoboTwin env python}"
@@ -62,4 +62,4 @@ PYTHONUNBUFFERED=1 PYTHONWARNINGS=ignore::UserWarning \
     --task_config      "${task_config}" \
     --ckpt_setting     dsrl \
     --seed             "${seed}" \
-    --policy_name      dsrl.robotwin_client
+    --policy_name      dsrl.data.robotwin.client

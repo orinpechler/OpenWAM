@@ -1,4 +1,4 @@
-# Observation encoder (dsrl/wam_encoder.py): the frozen OpenWAM video DiT run on the clean
+# Observation encoder (dsrl/models/wam_encoder.py): the frozen OpenWAM video DiT run on the clean
 # first frame with the prompt and proprio as context. Features = mean-pooled first-frame
 # tokens after `layer` DiT blocks (video DiT width, 3072 for Wan2.2-TI2V-5B), followed by
 # the normalized proprio (state_dim, 80): obs_dim = 3072 + 80 = 3152 for the actor and critics.
@@ -6,7 +6,7 @@
 #   encoder = hydra.utils.instantiate(cfg)(wam=architecture)
 #   features = encoder(**wam_inputs)   # same kwargs as wam.generate(...)
 
-_target_: dsrl.wam_encoder.WAMEncoder
+_target_: dsrl.models.wam_encoder.WAMEncoder
 _partial_: true
 
 layer: 20                  # DiT blocks to run (1..30); features are taken after this block

@@ -1,8 +1,8 @@
 """Train the DSRL-SAC agent online in RoboTwin.
 
 This process is the policy server: it loads the frozen WAM, builds the encoder,
-networks, replay buffer and agent, and serves ``dsrl/robotwin_client.py`` (run
-separately with ``dsrl/robotwin_rollout.sh``; ``jobs/train_dsrl.job`` runs both).
+networks, replay buffer and agent, and serves ``dsrl/data/robotwin/client.py`` (run
+separately with ``dsrl/data/robotwin/rollout.sh``; ``jobs/train_dsrl.job`` runs both).
 Each executed chunk arrives as one (s, w, r, s') transition from
 ``RoboTwinRLServer``; once the buffer holds ``learning_starts`` transitions,
 each stored one is followed by one ``agent.update()`` (``agent.gradient_steps``
@@ -45,7 +45,7 @@ import torch.nn as nn  # noqa: E402
 from hydra.utils import instantiate  # noqa: E402
 from omegaconf import DictConfig, OmegaConf  # noqa: E402
 
-from dsrl.robotwin_server import RoboTwinRLServer, Transition  # noqa: E402
+from dsrl.data.robotwin.server import RoboTwinRLServer, Transition  # noqa: E402
 from dsrl.sac_agent import SACAgent  # noqa: E402
 from openwam.deploy.server import ERR_INTERNAL, ERROR, MAX_MESSAGE_BYTES  # noqa: E402
 

@@ -10,7 +10,7 @@ import torch.nn as nn
 
 from dsrl.losses import actor_loss, critic_loss, temperature_loss
 from dsrl.models.latent_actor import LatentActor
-from dsrl.replay_buffer import ReplayBuffer
+from dsrl.data.replay_buffer import ReplayBuffer
 
 if TYPE_CHECKING:
     # Type-only: importing OpenWAM pulls in its video/VLM backbones.

@@ -11,7 +11,7 @@
 
 # DSRL-SAC training on RoboTwin on one Snellius GPU: starts dsrl/train_dsrl.py (the
 # policy server + learner) in the background, waits until its WebSocket port is
-# open, then runs dsrl/robotwin_rollout.sh against it. Both share the GPU.
+# open, then runs dsrl/data/robotwin/rollout.sh against it. Both share the GPU.
 # 15 minutes before the time limit the trainer gets SIGTERM, saves a final
 # checkpoint and finishes its wandb run.
 #
@@ -94,7 +94,7 @@ echo "[INFO] Trainer up after $((SECONDS - start))s."
 
 # ── RoboTwin client (training seeds, SEED=1 by default) ──────────────────────
 # gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
-bash dsrl/robotwin_rollout.sh "${TASK}" "${TASK_CONFIG}" 0 "${PORT}" "${HOST}" &
+bash dsrl/data/robotwin/rollout.sh "${TASK}" "${TASK_CONFIG}" 0 "${PORT}" "${HOST}" &
 rollout_pid=$!
 
 # The trainer ends the run (budget reached, client gone, or SIGTERM); waits are
