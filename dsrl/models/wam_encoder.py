@@ -22,8 +22,7 @@ class WAMEncoder:
     ``attention_mask_mode`` never to the action tokens), and a TI2V backbone
     conditions them on t = 0. Their hidden states inside ``generate`` are
     therefore the same at every denoising step and for any noise, and this
-    standalone pass reproduces them; ``dsrl/check_wam_encoder.py`` verifies that
-    on a real checkpoint.
+    standalone pass reproduces them.
 
     Inputs are the keyword arguments of ``BaseWAMArchitecture.generate`` for the
     observation (``prompt``, ``first_frame_image``, ``proprio`` in model space,

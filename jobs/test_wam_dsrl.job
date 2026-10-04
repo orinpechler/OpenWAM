@@ -1,0 +1,103 @@
+#!/bin/bash
+#SBATCH --job-name=test_wam_dsrl
+#SBATCH --partition=gpu_a100
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=06:00:00
+#SBATCH --output=jobs/logs/%x_%j.out
+
+# Evaluate OpenWAM steered by a trained DSRL latent actor on one RoboTwin task, the
+# same way OpenWAM itself is evaluated (robotwin_single_eval.job): starts
+# dsrl/test_wam_dsrl.py as the policy server in the background, waits until its
+# WebSocket port is open, then runs benchmarks/robotwin/single_eval.sh on the
+# evaluation seeds. Results land in ${ROBOTWIN_PATH}/eval_result/ under ckpt_setting
+# ${CKPT_SETTING}. Server and simulator share the single allocated GPU.
+#
+# Submit from the repo root:
+#   POLICY_CKPT=outputs/dsrl/<date>/<time>/checkpoints/agent.pt sbatch jobs/test_wam_dsrl.job
+#   POLICY_CKPT=<entity>/openwam-dsrl/dsrl-agent-<run id>:final TASK=adjust_bottle sbatch jobs/test_wam_dsrl.job
+# Extra arguments are passed on to dsrl/test_wam_dsrl.py (e.g. --stochastic).
+
+set -euo pipefail
+
+ROBOTWIN_PATH="${ROBOTWIN_PATH:-/gpfs/home6/opechler/RoboTwin}"
+ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
+CKPT_DIR="${CKPT_DIR:-assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Sim-RoboTwin-Full}"
+POLICY_CKPT="${POLICY_CKPT:?POLICY_CKPT must be a DSRL agent.pt or a wandb artifact ref}"
+ENV_NAME="${ENV_NAME:-openwam}"
+TASK="${TASK:-adjust_bottle}"
+TASK_CONFIG="${TASK_CONFIG:-demo_clean}"
+CKPT_SETTING="${CKPT_SETTING:-dsrl}"       # label in RoboTwin's result paths
+SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
+
+# ROBOTWIN_TEST_NUM caps the episodes (default: RoboTwin's 100).
+export ROBOTWIN_PATH ROBOTWIN_PYTHON
+
+cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
+[[ -d "${CKPT_DIR}" ]] || { echo "[ERROR] CKPT_DIR not found: ${CKPT_DIR}" >&2; exit 1; }
+
+# GPU nodes can be shared between jobs, so derive the port from the job id.
+PORT=$((20000 + ${SLURM_JOB_ID:-0} % 20000))
+HOST=127.0.0.1
+SERVER_LOG="jobs/logs/${SLURM_JOB_NAME:-test_wam_dsrl}_${SLURM_JOB_ID:-local}_server.log"
+
+module purge
+module load 2025
+module load Anaconda3/2025.06-1
+# torch.compile (Triton) needs a C compiler at runtime.
+module load GCC/14.2.0
+# RoboTwin pipes eval videos through ffmpeg (eval_video_log in task_config).
+module load FFmpeg/7.1.1-GCCcore-14.2.0
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "${ENV_NAME}"
+
+echo "node         : $(hostname)"
+echo "checkpoint   : ${CKPT_DIR}"
+echo "policy       : ${POLICY_CKPT}"
+echo "task         : ${TASK} (${TASK_CONFIG}), episodes=${ROBOTWIN_TEST_NUM:-100}"
+echo "server       : ws://${HOST}:${PORT}, log=${SERVER_LOG}"
+nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv
+
+# ── Steered policy server (background) ───────────────────────────────────────
+PYTHONUNBUFFERED=1 python dsrl/test_wam_dsrl.py \
+    --ckpt-dir "${CKPT_DIR}" --policy-ckpt "${POLICY_CKPT}" \
+    --device cuda:0 --host "${HOST}" --port "${PORT}" \
+    "$@" > "${SERVER_LOG}" 2>&1 &
+server_pid=$!
+
+cleanup() {
+    kill "${server_pid}" 2>/dev/null || true
+    wait "${server_pid}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+echo "[INFO] Waiting for policy server (pid ${server_pid}) on port ${PORT}..."
+start=${SECONDS}
+until (exec 3<>"/dev/tcp/${HOST}/${PORT}") 2>/dev/null; do
+    if ! kill -0 "${server_pid}" 2>/dev/null; then
+        echo "[ERROR] Policy server exited during startup. Last lines of ${SERVER_LOG}:" >&2
+        tail -n 50 "${SERVER_LOG}" >&2
+        exit 1
+    fi
+    if (( SECONDS - start > SERVER_TIMEOUT )); then
+        echo "[ERROR] Policy server not listening after ${SERVER_TIMEOUT}s." >&2
+        tail -n 50 "${SERVER_LOG}" >&2
+        exit 1
+    fi
+    sleep 5
+done
+echo "[INFO] Policy server up after $((SECONDS - start))s."
+
+# ── RoboTwin client (OpenWAM's evaluation, unchanged) ────────────────────────
+# gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
+set +e
+bash benchmarks/robotwin/single_eval.sh "${TASK}" "${TASK_CONFIG}" "${CKPT_SETTING}" 0 "${PORT}" "${HOST}"
+status=$?
+set -e
+
+echo "[INFO] single_eval.sh exited with status ${status}"
+echo "[INFO] RoboTwin results: ${ROBOTWIN_PATH}/eval_result/"
+exit "${status}"
