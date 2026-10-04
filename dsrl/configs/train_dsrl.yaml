@@ -43,7 +43,7 @@ checkpoint:
   # run dir by its timestamp. Holds agent_ep<N>.pt, final.pt and the run's config.yaml, which
   # dsrl/test_wam_dsrl.py reads. Scratch is purged periodically; final.pt also goes to wandb.
   dir: /scratch-shared/${oc.env:USER}/dsrl/${now:%Y-%m-%d}/${now:%H-%M-%S}/checkpoints
-  every_episodes: 100        # keep agent_ep<N>.pt every N training episodes, local only; 0: only final.pt
+  every_episodes: 20         # keep agent_ep<N>.pt every N training episodes, local only; 0: only final.pt
   upload_final: true         # upload final.pt to wandb (artifact dsrl-agent-<run id>, alias final)
   resume: null               # local .pt or wandb artifact ref ("<entity>/<project>/dsrl-agent-<run id>:final")
 

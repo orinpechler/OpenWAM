@@ -12,6 +12,10 @@
 # DSRL-SAC training on RoboTwin on one Snellius GPU: starts dsrl/train_dsrl.py (the
 # policy server + learner) in the background, waits until its WebSocket port is
 # open, then runs dsrl/data/robotwin/rollout.sh against it. Both share the GPU.
+# The rollout runs under jobs/sim_watchdog.sh, which restarts a hung simulator on
+# the next seed; the trainer keeps serving across the reconnect
+# (train.stop_on_disconnect=false) and stops on its budget, a signal, or when the
+# rollout ends for good.
 # 15 minutes before the time limit the trainer gets SIGTERM, saves a final
 # checkpoint and finishes its wandb run.
 # Logs, .hydra and wandb files: outputs/dsrl/<date>/<time>/. Checkpoints (agent_ep<N>.pt,
@@ -73,6 +77,7 @@ PYTHONUNBUFFERED=1 python dsrl/train_dsrl.py \
     wam.ckpt_dir="${CKPT_DIR}" wam.device=cuda:0 \
     server.host="${HOST}" server.port="${PORT}" \
     wandb.group="${TASK}_${TASK_CONFIG}" \
+    train.stop_on_disconnect=false \
     "$@" > "${TRAIN_LOG}" 2>&1 &
 trainer_pid=$!
 rollout_pid=""
@@ -103,9 +108,10 @@ until (exec 3<>"/dev/tcp/${HOST}/${PORT}") 2>/dev/null; do
 done
 echo "[INFO] Trainer up after $((SECONDS - start))s."
 
-# ── RoboTwin client (training seeds, SEED=1 by default) ──────────────────────
+# ── RoboTwin client (training seeds, SEED=1 by default), restarted if it hangs ─
 # gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
-bash dsrl/data/robotwin/rollout.sh "${TASK}" "${TASK_CONFIG}" 0 "${PORT}" "${HOST}" &
+bash jobs/sim_watchdog.sh "jobs/logs/${SLURM_JOB_NAME:-dsrl_train}_${SLURM_JOB_ID:-local}" "${NUM_EPISODES}" \
+    bash dsrl/data/robotwin/rollout.sh "${TASK}" "${TASK_CONFIG}" 0 "${PORT}" "${HOST}" &
 rollout_pid=$!
 
 # The trainer ends the run (budget reached, client gone, or SIGTERM). If RoboTwin

@@ -13,6 +13,10 @@
 #        SEED           RoboTwin seed index; episodes use seeds from 100000 * (1 + SEED).
 #                       Default 1 keeps training seeds apart from the evaluation seeds (SEED=0).
 #        ROBOTWIN_EVAL_VIDEO  1 keeps RoboTwin's mp4 of every episode (default 0: no videos)
+#        ROBOTWIN_START_SEED  start at this seed instead (resume, set by jobs/sim_watchdog.sh)
+#        POLICY_NAME    RoboTwin policy module (default dsrl.data.robotwin.client;
+#                       openwam2robotwin_interface for the plain OpenWAM server, which has no episode_end)
+#        CKPT_SETTING   label in RoboTwin's result paths (default dsrl)
 
 set -euo pipefail
 
@@ -32,6 +36,8 @@ gpu_id="$3"
 port="${4:-${ROBOTWIN_PORT:-8848}}"
 host="${5:-${ROBOTWIN_POLICY_HOST:-127.0.0.1}}"
 seed="${SEED:-1}"
+policy_name="${POLICY_NAME:-dsrl.data.robotwin.client}"
+ckpt_setting="${CKPT_SETTING:-dsrl}"
 
 runtime_config="$(mktemp "${TMPDIR:-/tmp}/dsrl_policy_config.XXXXXX.yml")"
 trap 'rm -f "${runtime_config}"' EXIT
@@ -53,7 +59,8 @@ export PYTHONPATH="${ROBOTWIN_PATH}:${BENCH_DIR}:${REPO_ROOT}:${PYTHONPATH:-}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/matplotlib}"
 
 cd "${ROBOTWIN_PATH}"
-echo "task         : ${task_name} (${task_config}), episodes=${ROBOTWIN_TEST_NUM}, seed=${seed}"
+echo "task         : ${task_name} (${task_config}), episodes=${ROBOTWIN_TEST_NUM}, seed=${seed}${ROBOTWIN_START_SEED:+ (resuming at seed ${ROBOTWIN_START_SEED})}"
+echo "policy       : ${policy_name} (ckpt_setting ${ckpt_setting})"
 echo "server       : ws://${host}:${port}"
 echo "eval videos  : $([[ "${ROBOTWIN_EVAL_VIDEO:-0}" == 1 ]] && echo on || echo off)"
 
@@ -63,6 +70,6 @@ PYTHONUNBUFFERED=1 PYTHONWARNINGS=ignore::UserWarning \
     --overrides \
     --task_name        "${task_name}" \
     --task_config      "${task_config}" \
-    --ckpt_setting     dsrl \
+    --ckpt_setting     "${ckpt_setting}" \
     --seed             "${seed}" \
-    --policy_name      dsrl.data.robotwin.client
+    --policy_name      "${policy_name}"

@@ -10,7 +10,10 @@
 
 # Smoke test of the RoboTwin benchmark on one Snellius GPU: starts the OpenWAM
 # policy server in the background, waits until its WebSocket port is open, then
-# runs benchmarks/robotwin/single_eval.sh for ONE task and ONE episode.
+# runs the RoboTwin evaluation for ONE task. The client is launched through
+# dsrl/data/robotwin/rollout.sh with single_eval.sh's settings (evaluation seeds
+# SEED=0, OpenWAM's client, videos on) under jobs/sim_watchdog.sh, which restarts a
+# hung simulator and resumes on the next seed; the [WATCHDOG] lines give the total.
 # Server and simulator share the single allocated GPU.
 #
 # Submit from the repo root:
@@ -29,6 +32,8 @@ SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
 # One episode only, for now.
 export ROBOTWIN_TEST_NUM=50
 export ROBOTWIN_PATH ROBOTWIN_PYTHON
+# single_eval.sh's settings for rollout.sh.
+export SEED=0 ROBOTWIN_EVAL_VIDEO="${ROBOTWIN_EVAL_VIDEO:-1}" POLICY_NAME=openwam2robotwin_interface CKPT_SETTING=openwam
 
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 [[ -d "${CKPT_DIR}" ]] || { echo "[ERROR] CKPT_DIR not found: ${CKPT_DIR}" >&2; exit 1; }
@@ -86,13 +91,14 @@ until (exec 3<>"/dev/tcp/${HOST}/${PORT}") 2>/dev/null; do
 done
 echo "[INFO] Policy server up after $((SECONDS - start))s."
 
-# ── RoboTwin client ──────────────────────────────────────────────────────────
+# ── RoboTwin client, restarted if the simulator hangs ────────────────────────
 # gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
 set +e
-bash benchmarks/robotwin/single_eval.sh "${TASK}" "${TASK_CONFIG}" openwam 0 "${PORT}" "${HOST}"
+bash jobs/sim_watchdog.sh "jobs/logs/${SLURM_JOB_NAME:-robotwin_single_eval}_${SLURM_JOB_ID:-local}" "${ROBOTWIN_TEST_NUM}" \
+    bash dsrl/data/robotwin/rollout.sh "${TASK}" "${TASK_CONFIG}" 0 "${PORT}" "${HOST}"
 status=$?
 set -e
 
-echo "[INFO] single_eval.sh exited with status ${status}"
+echo "[INFO] RoboTwin client exited with status ${status}"
 echo "[INFO] RoboTwin results: ${ROBOTWIN_PATH}/eval_result/"
 exit "${status}"

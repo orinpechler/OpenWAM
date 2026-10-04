@@ -11,9 +11,13 @@
 # Evaluate OpenWAM steered by a trained DSRL latent actor on one RoboTwin task, the
 # same way OpenWAM itself is evaluated (robotwin_single_eval.job): starts
 # dsrl/test_wam_dsrl.py as the policy server in the background, waits until its
-# WebSocket port is open, then runs benchmarks/robotwin/single_eval.sh on the
-# evaluation seeds. Results land in ${ROBOTWIN_PATH}/eval_result/ under ckpt_setting
-# ${CKPT_SETTING}. Server and simulator share the single allocated GPU.
+# WebSocket port is open, then runs dsrl/data/robotwin/rollout.sh on the evaluation
+# seeds (SEED=0, as single_eval.sh) with the DSRL client, which reports each
+# episode's end so the server logs it. The client runs under jobs/sim_watchdog.sh,
+# which restarts a hung simulator and resumes on the next seed. Results land in
+# ${ROBOTWIN_PATH}/eval_result/ under ckpt_setting ${CKPT_SETTING}, one result dir
+# per client attempt; the [WATCHDOG] lines give the total. Server and simulator
+# share the single allocated GPU.
 #
 # Submit from the repo root:
 #   POLICY_CKPT=/scratch-shared/$USER/dsrl/<date>/<time>/checkpoints/final.pt sbatch jobs/test_wam_dsrl.job
@@ -37,9 +41,9 @@ CKPT_SETTING="${CKPT_SETTING:-dsrl}"       # label in RoboTwin's result paths
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
 EPISODES="${EPISODES:-50}"                 # evaluation episodes (robotwin_single_eval.job also runs 50)
 
-# single_eval.sh reads the episode count from ROBOTWIN_TEST_NUM.
-export ROBOTWIN_TEST_NUM="${EPISODES}"
 export ROBOTWIN_PATH ROBOTWIN_PYTHON
+# Evaluation seeds and per-episode videos, as single_eval.sh.
+export SEED=0 ROBOTWIN_EVAL_VIDEO="${ROBOTWIN_EVAL_VIDEO:-1}" CKPT_SETTING
 
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 [[ -d "${CKPT_DIR}" ]] || { echo "[ERROR] CKPT_DIR not found: ${CKPT_DIR}" >&2; exit 1; }
@@ -103,13 +107,14 @@ until (exec 3<>"/dev/tcp/${HOST}/${PORT}") 2>/dev/null; do
 done
 echo "[INFO] Policy server up after $((SECONDS - start))s."
 
-# ── RoboTwin client (OpenWAM's evaluation, unchanged) ────────────────────────
+# ── RoboTwin client, restarted if the simulator hangs ────────────────────────
 # gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
 set +e
-bash benchmarks/robotwin/single_eval.sh "${TASK}" "${TASK_CONFIG}" "${CKPT_SETTING}" 0 "${PORT}" "${HOST}"
+bash jobs/sim_watchdog.sh "jobs/logs/${SLURM_JOB_NAME:-test_wam_dsrl}_${SLURM_JOB_ID:-local}" "${EPISODES}" \
+    bash dsrl/data/robotwin/rollout.sh "${TASK}" "${TASK_CONFIG}" 0 "${PORT}" "${HOST}"
 status=$?
 set -e
 
-echo "[INFO] single_eval.sh exited with status ${status}"
+echo "[INFO] RoboTwin client exited with status ${status}"
 echo "[INFO] RoboTwin results: ${ROBOTWIN_PATH}/eval_result/"
 exit "${status}"
