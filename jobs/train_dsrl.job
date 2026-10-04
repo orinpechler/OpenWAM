@@ -9,7 +9,7 @@
 #SBATCH --signal=B:USR1@900
 #SBATCH --output=jobs/logs/%x_%j.out
 
-# DSRL-NA training on RoboTwin on one Snellius GPU: starts dsrl/train_dsrl.py (the
+# DSRL-SAC training on RoboTwin on one Snellius GPU: starts dsrl/train_dsrl.py (the
 # policy server + learner) in the background, waits until its WebSocket port is
 # open, then runs dsrl/robotwin_rollout.sh against it. Both share the GPU.
 # 15 minutes before the time limit the trainer gets SIGTERM, saves a final

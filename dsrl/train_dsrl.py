@@ -1,11 +1,13 @@
-"""Train the DSRL-NA SAC agent online in RoboTwin.
+"""Train the DSRL-SAC agent online in RoboTwin.
 
 This process is the policy server: it loads the frozen WAM, builds the encoder,
 networks, replay buffer and agent, and serves ``dsrl/robotwin_client.py`` (run
 separately with ``dsrl/robotwin_rollout.sh``; ``jobs/train_dsrl.job`` runs both).
-Each executed chunk arrives as one transition from ``RoboTwinRLServer``; it is
-stored and pays for ``updates_per_transition`` agent updates, which run while the
-simulator waits for the reply, within ``max_update_seconds`` per message.
+Each executed chunk arrives as one (s, w, r, s') transition from
+``RoboTwinRLServer``; once the buffer holds ``learning_starts`` transitions,
+each stored one is followed by one ``agent.update()`` (``agent.gradient_steps``
+gradient rounds), run while the simulator waits for the reply. Updates never
+run the WAM, so they are cheap next to acting.
 
 Every ``eval_every_episodes``-th episode acts with the actor's mean and is not
 stored. Checkpoints go to ``checkpoint.dir/agent.pt`` and, with wandb, to the
@@ -13,10 +15,10 @@ run's ``dsrl-agent-<run id>`` model artifact. SIGINT / SIGTERM stop training
 after the current message and save a final checkpoint.
 
 wandb sections:
-    action_critic/*, noise_critic/*, actor/*, temperature/*   loss metrics, per agent update
-                                                              (logged by SACAgent, against agent/update_step)
-    rollout/*, eval/*                                         per training / evaluation episode
-    train/*, buffer/*, time/*                                 per episode
+    critic/*, actor/*, temperature/*   loss metrics, per agent update
+                                       (logged by SACAgent, against agent/update_step)
+    rollout/*, eval/*                  per training / evaluation episode
+    train/*, buffer/*, time/*          per episode
 All episode metrics are plotted against ``env/episode``.
 
 Usage:
@@ -51,56 +53,6 @@ logger = logging.getLogger("train_dsrl")
 
 _EPISODE_METRIC = "env/episode"
 _EPISODE_SECTIONS = ("env", "rollout", "eval", "train", "buffer", "time")
-# The only observation fields WAMInputsBuilder reads.
-_OBS_KEYS = ("image", "prompt", "state")
-
-
-class ObservationStore:
-    """Preprocessed observations of the states in the replay buffer, keyed by their features.
-
-    The buffer holds encoder features only, but the agent's updates decode
-    replayed states with the WAM, which needs the raw observation. A state is
-    looked up by the exact bytes of its float32 feature vector, which the buffer
-    stores unchanged. Entries are reference counted against the buffer's slots
-    (each transition references its obs and next_obs), so an observation is
-    dropped once the circular buffer has overwritten every transition using it.
-    """
-
-    def __init__(self, capacity: int):
-        self.capacity = capacity
-        self._obs: dict[bytes, dict] = {}
-        self._refs: dict[bytes, int] = defaultdict(int)
-        self._slots: list[tuple[bytes, bytes] | None] = [None] * capacity
-        self._ptr = 0
-
-    @staticmethod
-    def key(features: torch.Tensor) -> bytes:
-        return features.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes()
-
-    def __len__(self) -> int:
-        return len(self._obs)
-
-    def __getitem__(self, features: torch.Tensor) -> dict:
-        return self._obs[self.key(features)]
-
-    def add(self, obs: dict, features: torch.Tensor, next_obs: dict, next_features: torch.Tensor) -> None:
-        """Register one transition; call once per ``ReplayBuffer.add`` of a single transition."""
-        old = self._slots[self._ptr]
-        if old is not None:
-            for k in old:
-                self._release(k)
-        keys = (self.key(features), self.key(next_features))
-        for k, o in zip(keys, (obs, next_obs)):
-            self._refs[k] += 1
-            self._obs.setdefault(k, {f: o[f] for f in _OBS_KEYS if f in o})
-        self._slots[self._ptr] = keys
-        self._ptr = (self._ptr + 1) % self.capacity
-
-    def _release(self, key: bytes) -> None:
-        self._refs[key] -= 1
-        if self._refs[key] == 0:
-            del self._refs[key]
-            del self._obs[key]
 
 
 class TrainingServer(RoboTwinRLServer):
@@ -202,24 +154,15 @@ class Trainer:
         logger.info("DSRL dims: %s", self.dims)
 
         actor = instantiate(cfg.actor, input_dim=obs_dim, output_dim=noise_dim)
-        q_action = [
-            instantiate(cfg.q_action, input_dim=obs_dim, action_dim=action_dim)
-            for _ in range(cfg.critics.num_q_action)
-        ]
-        q_noise = [
-            instantiate(cfg.q_noise, input_dim=obs_dim, action_dim=noise_dim) for _ in range(cfg.critics.num_q_noise)
-        ]
+        critic = [instantiate(cfg.critic, input_dim=obs_dim, action_dim=noise_dim) for _ in range(cfg.num_critics)]
         self.replay_buffer = instantiate(cfg.replay_buffer, obs_dim=obs_dim, action_dim=action_dim, noise_dim=noise_dim)
-        self.obs_store = ObservationStore(self.replay_buffer.capacity)
 
         self.run = init_wandb(cfg)
         self.agent: SACAgent = instantiate(cfg.agent, horizon=horizon)(
             actor=actor,
-            q_action=q_action,
-            q_noise=q_noise,
+            critic=critic,
             replay_buffer=self.replay_buffer,
             wam=wam,
-            wam_inputs_fn=self.wam_inputs,
             wandb_run=self.run,
         )
         if cfg.checkpoint.resume:
@@ -239,8 +182,7 @@ class Trainer:
                     "dims": self.dims,
                     "params": {
                         "actor": num_params(self.agent.actor),
-                        "q_action": num_params(self.agent.q_action),
-                        "q_noise": num_params(self.agent.q_noise),
+                        "critic": num_params(self.agent.critic),
                     },
                 },
                 allow_val_change=True,
@@ -252,20 +194,12 @@ class Trainer:
         self.eval_episodes = 0
         self.transitions = 0
         self.env_steps = 0
-        self.update_debt = 0.0
         self.successes: deque[float] = deque(maxlen=cfg.train.success_window)
         self.eval_successes: deque[float] = deque(maxlen=cfg.train.success_window)
         self._episode_start = time.monotonic()
         self._episode_stats: dict[str, list[float]] = defaultdict(list)
-        self._last_update_seconds = 0.0
         self._stop_requested = False
         self.server.deterministic = self._is_eval(self.episodes + 1)
-
-    # ------------------------------------------------------------------ agent hooks
-
-    def wam_inputs(self, features: torch.Tensor) -> dict:
-        """``generate`` kwargs of a replayed state, rebuilt from its stored observation."""
-        return self.server.build_inputs(self.obs_store[features])
 
     def _resume(self, ref: str) -> None:
         if Path(ref).exists():
@@ -287,47 +221,20 @@ class Trainer:
         noise = t.noise.to(self.agent.device).unsqueeze(0)
         with torch.no_grad():
             _, log_std = self.agent.actor(features)
-            q_noise = torch.stack([q(features, noise) for q in self.agent.q_noise])
+            q = torch.stack([critic(features, noise) for critic in self.agent.critic])
         stats["noise_abs"].append(noise.abs().mean().item())
         stats["noise_norm"].append(noise.norm().item())
         stats["actor_std"].append(log_std.exp().mean().item())
-        stats["q_noise"].append(q_noise.mean().item())
+        stats["q"].append(q.mean().item())
 
         if self.server.deterministic:
             return
         self.agent.add_transition(t.features, t.action, t.reward, t.next_features, t.done, noise=t.noise)
-        self.obs_store.add(t.obs, t.features, t.next_obs, t.next_features)
         self.transitions += 1
-        self.update_debt += self.train_cfg.updates_per_transition
-        self._run_updates()
-
-    def _run_updates(self) -> None:
-        """Pay owed updates within the per-message wall-clock budget; the rest carries over.
-
-        At least one owed update runs per call so training always progresses; the
-        next one starts only if it is expected (from the last one's duration) to
-        finish within the budget.
-        """
-        if len(self.replay_buffer) < self.train_cfg.learning_starts:
-            self.update_debt = 0.0
-            return
-        budget = self.train_cfg.max_update_seconds
-        start = time.monotonic()
-        ran = 0
-        while self.update_debt >= 1 and (ran == 0 or time.monotonic() - start + self._last_update_seconds <= budget):
+        if len(self.replay_buffer) >= self.train_cfg.learning_starts:
             t0 = time.monotonic()
             self.agent.update()
-            self._last_update_seconds = time.monotonic() - t0
-            self._episode_stats["update_seconds"].append(self._last_update_seconds)
-            self.update_debt -= 1
-            ran += 1
-        if self._last_update_seconds > budget:
-            logger.warning(
-                "One agent update took %.0fs > max_update_seconds=%.0fs; the RoboTwin client may time out. "
-                "Lower agent.batch_size / gradient_steps / noise_critic_steps.",
-                self._last_update_seconds,
-                budget,
-            )
+            stats["update_seconds"].append(time.monotonic() - t0)
 
     def on_episode_end(self, info: dict) -> None:
         evaluating = self.server.deterministic
@@ -339,11 +246,10 @@ class Trainer:
         else:
             self.train_episodes += 1
             self.successes.append(float(info["success"]))
-            self._run_updates()
 
         self._log_episode(info, evaluating)
         logger.info(
-            "episode %d (%s): success=%s steps=%d chunks=%d | buffer=%d updates=%d debt=%.1f",
+            "episode %d (%s): success=%s steps=%d chunks=%d | buffer=%d updates=%d",
             self.episodes,
             "eval" if evaluating else "train",
             info["success"],
@@ -351,7 +257,6 @@ class Trainer:
             info["chunks"],
             len(self.replay_buffer),
             self.agent.update_step,
-            self.update_debt,
         )
 
         every = self.cfg.checkpoint.every_episodes
@@ -384,13 +289,11 @@ class Trainer:
             f"{section}/noise_abs": mean("noise_abs"),
             f"{section}/noise_norm": mean("noise_norm"),
             f"{section}/actor_std": mean("actor_std"),
-            f"{section}/q_noise": mean("q_noise"),
+            f"{section}/q": mean("q"),
             "train/update_step": self.agent.update_step,
             "train/updates_this_episode": len(stats["update_seconds"]),
-            "train/update_debt": self.update_debt,
             "train/alpha": self.agent.alpha.item(),
             "buffer/size": len(self.replay_buffer),
-            "buffer/stored_observations": len(self.obs_store),
             "time/episode_seconds": time.monotonic() - self._episode_start,
             "time/chunk_seconds": float(np.mean(self.server.chunk_seconds)) if self.server.chunk_seconds else 0.0,
             "time/update_seconds": mean("update_seconds"),

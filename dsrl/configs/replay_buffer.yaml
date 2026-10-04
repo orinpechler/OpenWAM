@@ -7,6 +7,6 @@ _target_: dsrl.replay_buffer.ReplayBuffer
 
 capacity: ???              # required: maximum number of transitions kept
 obs_dim: ???               # required: state/observation feature width (critics' input_dim)
-action_dim: ???            # required: width of the flattened executed action chunk (action critic's action_dim)
-noise_dim: null            # width of the latent noise w (latent actor's output_dim); null = don't store noise
+action_dim: ???            # required: width of the flattened executed action chunk (kept for analysis)
+noise_dim: ???             # required for DSRL-SAC: width of the latent noise w (latent actor's output_dim)
 device: cpu                # where storage is preallocated (e.g. cuda to keep sampling on the GPU)

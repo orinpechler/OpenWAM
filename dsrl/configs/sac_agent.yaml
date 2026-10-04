@@ -1,11 +1,10 @@
-# DSRL-NA SAC agent (dsrl/sac_agent.py): hyperparameters only. Values below are the
+# DSRL-SAC agent (dsrl/sac_agent.py): hyperparameters only. Values below are the
 # class defaults. Instantiation is partial because the networks, replay buffer and
 # frozen diffusion policy are built at runtime:
 #   make_agent = hydra.utils.instantiate(cfg)
-#   agent = make_agent(actor=..., q_action=[...], q_noise=..., replay_buffer=...,
-#                      wam=..., wam_inputs_fn=..., wandb_run=run)
-# The agent calls wam.generate(**wam_inputs_fn(obs), action_noise=..., decode_video=False).
-# The latent actor's output_dim (and q_noise's action_dim) is the diffusion policy's
+#   agent = make_agent(actor=..., critic=[...], replay_buffer=..., wam=..., wandb_run=run)
+# The agent only runs the WAM when acting: wam.generate(**wam_inputs, action_noise=..., decode_video=False).
+# The latent actor's output_dim (and the critic's action_dim) is the diffusion policy's
 # per-step action width; the actor's noise is replicated over `horizon` steps.
 
 _target_: dsrl.sac_agent.SACAgent
@@ -16,16 +15,14 @@ executed_steps: null         # actions executed per chunk (= one transition); nu
 gamma: 0.99                  # per-transition (= per executed chunk) discount, ~ gamma_step ** executed_steps
 tau: 0.005                   # Polyak rate for the action-critic targets
 batch_size: 256
-gradient_steps: 20           # per environment timestep: N action-critic steps and N policy steps
-noise_critic_steps: 10       # per environment timestep: N noise-critic (Q^W) steps, run between the two
+gradient_steps: 20           # per environment timestep: N rounds of (critic step, actor + temperature step)
 actor_lr: 3.0e-4
-critic_lr: 3.0e-4            # action critic Q^A
-noise_critic_lr: 3.0e-4      # noise critic Q^W
+critic_lr: 3.0e-4
 alpha_lr: 3.0e-4
 init_alpha: 1.0              # initial SAC entropy coefficient
 target_entropy: null         # null: -noise_dim
 target_reduction: min        # how critic ensembles are reduced: min (clipped double-Q) or mean
-target_update_interval: 1    # target Polyak update every N action-critic gradient steps
+target_update_interval: 1    # target Polyak update every N critic gradient steps
 max_grad_norm: null          # null: no gradient clipping
 device: cuda
-# wandb: metrics are logged after every update(), each averaged over the steps of its phase.
+# wandb: metrics are logged after every update(), each averaged over its gradient_steps.

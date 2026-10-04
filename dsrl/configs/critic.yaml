@@ -1,7 +1,6 @@
-# Latent-noise critic Q^W(s, w) (dsrl/models/q_value.py), as in DSRL-NA: trained
-# by distillation, regressing Q^W(s, w) onto Q^A(s, pi_dp(s, w)) for noise
-# w ~ N(0, I), where pi_dp is the frozen diffusion policy. The latent actor
-# maximizes this critic.
+# Latent-noise critic Q(s, w) (dsrl/models/q_value.py), as in DSRL-SAC: trained with
+# soft TD learning on the stored latent noise w, treating the frozen diffusion policy
+# as part of the environment. The latent actor maximizes this critic.
 # Values below are the class defaults. Build it with hydra.utils.instantiate(cfg).
 
 _target_: dsrl.models.q_value.QValue

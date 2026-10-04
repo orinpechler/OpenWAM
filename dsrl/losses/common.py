@@ -1,12 +1,7 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
-
-# Frozen diffusion policy steered through its initial noise: pi_dp(obs, noise) -> action chunk.
-# ``obs`` is the batch's observation tensor and ``noise`` has shape (B, noise_dim); the
-# returned chunk may be unflattened and is reshaped to (B, action_dim) before use.
-ActionFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
 Critics = nn.Module | Sequence[nn.Module]
 
@@ -27,8 +22,3 @@ def ensemble_q(critics: Critics, x: torch.Tensor, a: torch.Tensor, reduction: st
     if reduction == "mean":
         return q.mean(dim=0)
     raise ValueError(f"unknown ensemble reduction {reduction!r}, expected 'min' or 'mean'")
-
-
-def decode_action(action_fn: ActionFn, obs: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-    """Run the frozen diffusion policy and flatten its chunk to (B, action_dim)."""
-    return action_fn(obs, noise).reshape(obs.shape[0], -1).to(obs.dtype)
