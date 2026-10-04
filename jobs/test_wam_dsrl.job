@@ -17,18 +17,20 @@
 #
 # Submit from the repo root:
 #   POLICY_CKPT=/scratch-shared/$USER/dsrl/<date>/<time>/checkpoints/final.pt sbatch jobs/test_wam_dsrl.job
-#   POLICY_CKPT=<entity>/openwam-dsrl/dsrl-agent-<run id>:final TASK=adjust_bottle sbatch jobs/test_wam_dsrl.job
+#   POLICY_CKPT=<entity>/openwam-dsrl/dsrl-agent-<run id>:final sbatch jobs/test_wam_dsrl.job
 # Extra arguments are passed on to dsrl/test_wam_dsrl.py (e.g. --stochastic).
 
 set -euo pipefail
 
 ROBOTWIN_PATH="${ROBOTWIN_PATH:-/gpfs/home6/opechler/RoboTwin}"
 ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
-CKPT_DIR="${CKPT_DIR:-assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Sim-RoboTwin-Full}"
+CKPT_DIR="${CKPT_DIR:-/scratch-shared/opechler/openwam_ckpt/OpenWAM-Alpha-Sim-RoboTwin-Clean2Random}"   # trained on demo_clean only
 POLICY_CKPT="${POLICY_CKPT:?POLICY_CKPT must be a DSRL checkpoint (.pt) or a wandb artifact ref}"
 ENV_NAME="${ENV_NAME:-openwam}"
-TASK="${TASK:-adjust_bottle}"
-TASK_CONFIG="${TASK_CONFIG:-demo_clean}"
+# Fixed on purpose (not read from the environment, which sbatch passes into the job):
+# this job only ever runs adjust_bottle in RoboTwin's randomized setting. Edit here to change.
+TASK="adjust_bottle"
+TASK_CONFIG="demo_randomized"
 CKPT_SETTING="${CKPT_SETTING:-dsrl}"       # label in RoboTwin's result paths
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
 

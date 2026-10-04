@@ -26,10 +26,12 @@ set -euo pipefail
 
 ROBOTWIN_PATH="${ROBOTWIN_PATH:-/gpfs/home6/opechler/RoboTwin}"
 ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
-CKPT_DIR="${CKPT_DIR:-assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Sim-RoboTwin-Full}"
+CKPT_DIR="${CKPT_DIR:-/scratch-shared/opechler/openwam_ckpt/OpenWAM-Alpha-Sim-RoboTwin-Clean2Random}"   # trained on demo_clean only
 ENV_NAME="${ENV_NAME:-openwam}"
-TASK="${TASK:-adjust_bottle}"
-TASK_CONFIG="${TASK_CONFIG:-demo_clean}"
+# Fixed on purpose (not read from the environment, which sbatch passes into the job):
+# this job only ever runs adjust_bottle in RoboTwin's randomized setting. Edit here to change.
+TASK="adjust_bottle"
+TASK_CONFIG="demo_randomized"
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
 
 export ROBOTWIN_PATH ROBOTWIN_PYTHON
@@ -70,7 +72,7 @@ nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv
 PYTHONUNBUFFERED=1 python dsrl/train_dsrl.py \
     wam.ckpt_dir="${CKPT_DIR}" wam.device=cuda:0 \
     server.host="${HOST}" server.port="${PORT}" \
-    wandb.group="${TASK}" \
+    wandb.group="${TASK}_${TASK_CONFIG}" \
     "$@" > "${TRAIN_LOG}" 2>&1 &
 trainer_pid=$!
 rollout_pid=""

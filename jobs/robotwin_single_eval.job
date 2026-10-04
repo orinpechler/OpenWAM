@@ -20,14 +20,14 @@ set -euo pipefail
 
 ROBOTWIN_PATH="${ROBOTWIN_PATH:-/gpfs/home6/opechler/RoboTwin}"
 ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
-CKPT_DIR="${CKPT_DIR:-assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Sim-RoboTwin-Full}"
+CKPT_DIR="${CKPT_DIR:-/scratch-shared/opechler/openwam_ckpt/OpenWAM-Alpha-Sim-RoboTwin-Clean2Random}"
 ENV_NAME="${ENV_NAME:-openwam}"
 TASK="${TASK:-adjust_bottle}"
-TASK_CONFIG="${TASK_CONFIG:-demo_clean}"
+TASK_CONFIG="${TASK_CONFIG:-demo_randomized}"
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
 
 # One episode only, for now.
-export ROBOTWIN_TEST_NUM=1
+export ROBOTWIN_TEST_NUM=100
 export ROBOTWIN_PATH ROBOTWIN_PYTHON
 
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
