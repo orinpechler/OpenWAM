@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=18
-#SBATCH --time=01:00:00
+#SBATCH --time=07:00:00
 #SBATCH --output=jobs/logs/%x_%j.out
 
 # Smoke test of the RoboTwin benchmark on one Snellius GPU: starts the OpenWAM
@@ -27,7 +27,7 @@ TASK_CONFIG="${TASK_CONFIG:-demo_randomized}"
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
 
 # One episode only, for now.
-export ROBOTWIN_TEST_NUM=100
+export ROBOTWIN_TEST_NUM=50
 export ROBOTWIN_PATH ROBOTWIN_PYTHON
 
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"

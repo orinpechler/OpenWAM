@@ -68,12 +68,28 @@ class SteeringPolicy:
         self.executed_steps = executed_steps
         self.active_dims = active_dims
         self.base_noise = None if base_noise is None else base_noise.to(device=self.device, dtype=torch.float32)
+        self.chunks = 0
 
     @torch.no_grad()
     def act(self, obs: torch.Tensor, wam_inputs, deterministic: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
         obs = obs.to(self.device)
         noise = self.actor.deterministic(obs) if deterministic else self.actor.sample(obs)[0]
-        return self.decode(wam_inputs, noise), noise
+        action = self.decode(wam_inputs, noise)
+        # One line per chunk, to verify encoder -> actor -> WAM decode are all in the loop.
+        self.chunks += 1
+        logger.info(
+            "chunk %d: obs |f|=%.2f | actor noise mean|w|=%.3f |w|=%.3f range=[%.2f, %.2f] | action %s range=[%.2f, %.2f]",
+            self.chunks,
+            obs.norm().item(),
+            noise.abs().mean().item(),
+            noise.norm().item(),
+            noise.min().item(),
+            noise.max().item(),
+            tuple(action.shape),
+            action.min().item(),
+            action.max().item(),
+        )
+        return action, noise
 
 
 def resolve_policy_checkpoint(ref: str, train_config: str | None) -> tuple[Path, DictConfig]:
@@ -146,7 +162,21 @@ def build_server(args: argparse.Namespace) -> RoboTwinRLServer:
         encoder.feature_dim,
         "sampled" if args.stochastic else "mean",
     )
-    return RoboTwinRLServer(engine, policy, encoder, deterministic=not args.stochastic)
+    successes = []
+
+    def log_episode(info: dict) -> None:
+        successes.append(info["success"])
+        logger.info(
+            "episode %d: success=%s steps=%d chunks=%d | success rate %d/%d",
+            len(successes),
+            info["success"],
+            info["steps"],
+            info["chunks"],
+            sum(successes),
+            len(successes),
+        )
+
+    return RoboTwinRLServer(engine, policy, encoder, on_episode_end=log_episode, deterministic=not args.stochastic)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
