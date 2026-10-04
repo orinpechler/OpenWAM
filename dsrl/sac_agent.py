@@ -34,11 +34,13 @@ def _frozen(module: nn.Module) -> Iterator[None]:
 class SACAgent:
     """DSRL-SAC agent: SAC in the latent-noise space of a frozen diffusion policy.
 
-    The latent actor pi^W outputs one noise vector w of width ``noise_dim`` (the
-    diffusion policy's per-step action width). It is replicated over the
-    ``horizon`` time steps to form the policy's initial noise (B, horizon,
-    noise_dim), so the actor steers a single per-dimension noise rather than the
-    full chunk-sized noise space.
+    The latent actor pi^W outputs one noise vector w of width ``noise_dim``. It
+    is replicated over the ``horizon`` time steps to form the policy's initial
+    action noise, so the actor steers a single per-dimension noise rather than
+    the full chunk-sized noise space. Without ``active_dims`` w covers the
+    diffusion policy's whole per-step action width; with them (unified-action
+    checkpoints, see ``dsrl.models.wam_noise``) w only fills those dims and the
+    rest come from the fixed ``base_noise`` (horizon, action_dim).
 
     The diffusion policy is treated as part of the environment: transitions are
     (s, w, r, s') and the critic Q(s, w) is learned with soft TD directly on the
@@ -68,6 +70,8 @@ class SACAgent:
         replay_buffer: ReplayBuffer,
         wam: "BaseWAMArchitecture",
         horizon: int,
+        active_dims: Sequence[int] | None = None,
+        base_noise: torch.Tensor | None = None,
         executed_steps: int | None = None,
         gamma: float = 0.99,
         tau: float = 0.005,
@@ -90,6 +94,16 @@ class SACAgent:
         if not 1 <= self.executed_steps <= horizon:
             raise ValueError(f"executed_steps must be in [1, horizon={horizon}], got {executed_steps}")
         self.noise_dim = actor.output_dim
+        if (active_dims is None) != (base_noise is None):
+            raise ValueError("active_dims and base_noise must be given together")
+        self.active_dims = None if active_dims is None else list(active_dims)
+        self.base_noise = None
+        if active_dims is not None:
+            if len(self.active_dims) != self.noise_dim:
+                raise ValueError(f"{len(self.active_dims)} active dims but actor output_dim is {self.noise_dim}")
+            if base_noise.dim() != 2 or base_noise.shape[0] != horizon:
+                raise ValueError(f"base_noise must be (horizon={horizon}, action_dim), got {tuple(base_noise.shape)}")
+            self.base_noise = base_noise.to(device=self.device, dtype=torch.float32)
         self.gamma = gamma
         self.tau = tau
         self.batch_size = batch_size
@@ -135,8 +149,17 @@ class SACAgent:
     # ------------------------------------------------------------------ sampling
 
     def expand_noise(self, noise: torch.Tensor) -> torch.Tensor:
-        """Replicate per-dimension noise (B, noise_dim) over time -> (B, horizon, noise_dim)."""
-        return noise.unsqueeze(1).expand(-1, self.horizon, -1)
+        """Per-dimension noise (B, noise_dim) -> the WAM's initial action noise (B, horizon, action_dim).
+
+        w is replicated over time; with ``active_dims`` it fills those dims of
+        ``base_noise`` and the others keep their fixed values.
+        """
+        steered = noise.unsqueeze(1).expand(-1, self.horizon, -1)
+        if self.active_dims is None:
+            return steered
+        full = self.base_noise.to(noise.device).expand(noise.shape[0], -1, -1).clone()
+        full[..., self.active_dims] = steered.to(full.dtype)
+        return full
 
     @torch.no_grad()
     def decode(self, wam_inputs: Sequence[dict], noise: torch.Tensor) -> torch.Tensor:
@@ -264,6 +287,8 @@ class SACAgent:
             "alpha_optimizer": self.alpha_optimizer.state_dict(),
             "update_step": self.update_step,
             "critic_step": self.critic_step,
+            # Recorded so evaluation can check it steers the same dims.
+            "active_dims": self.active_dims,
         }
         if include_replay_buffer:
             state["replay_buffer"] = self.replay_buffer.state_dict()

@@ -97,11 +97,26 @@ echo "[INFO] Trainer up after $((SECONDS - start))s."
 bash dsrl/data/robotwin/rollout.sh "${TASK}" "${TASK_CONFIG}" 0 "${PORT}" "${HOST}" &
 rollout_pid=$!
 
-# The trainer ends the run (budget reached, client gone, or SIGTERM); waits are
-# re-entered after the USR1 trap interrupts them.
-status=0
+# The trainer ends the run (budget reached, client gone, or SIGTERM). If RoboTwin
+# exits before it ever connects, the trainer would wait for a client forever, so
+# it is stopped (and checkpoints) once the rollout is gone. Waits are re-entered
+# after the USR1 trap interrupts them.
+rollout_stopped=0
 while kill -0 "${trainer_pid}" 2>/dev/null; do
-    wait "${trainer_pid}" && status=0 || status=$?
+    if (( ! rollout_stopped )) && ! kill -0 "${rollout_pid}" 2>/dev/null; then
+        rollout_stopped=1
+        echo "[WARN] RoboTwin rollout exited; stopping trainer"
+        kill -TERM "${trainer_pid}" 2>/dev/null || true
+    fi
+    if (( rollout_stopped )); then
+        wait "${trainer_pid}" || true
+    else
+        wait -n "${trainer_pid}" "${rollout_pid}" || true
+    fi
 done
+set +e
+wait "${trainer_pid}"   # bash keeps the exit status of reaped background jobs
+status=$?
+set -e
 echo "[INFO] Trainer exited with status ${status}. Log: ${TRAIN_LOG}"
 exit "${status}"

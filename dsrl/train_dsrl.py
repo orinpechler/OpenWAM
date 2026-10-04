@@ -46,6 +46,7 @@ from hydra.utils import instantiate  # noqa: E402
 from omegaconf import DictConfig, OmegaConf  # noqa: E402
 
 from dsrl.data.robotwin.server import RoboTwinRLServer, Transition  # noqa: E402
+from dsrl.models.wam_noise import steering_noise_layout  # noqa: E402
 from dsrl.sac_agent import SACAgent  # noqa: E402
 from openwam.deploy.server import ERR_INTERNAL, ERROR, MAX_MESSAGE_BYTES  # noqa: E402
 
@@ -142,11 +143,15 @@ class Trainer:
         horizon = int(getattr(self.engine.cfg.inference, "num_frames", 49)) - 1
         executed_steps = cfg.agent.executed_steps or horizon
         obs_dim = self.encoder.feature_dim
-        noise_dim = wam.action_dim
+        # Unified-action checkpoints: steer only the embodiment's dims (see steering_noise_layout).
+        active_dims, base_noise = steering_noise_layout(wam, horizon)
+        noise_dim = wam.action_dim if active_dims is None else len(active_dims)
         action_dim = executed_steps * raw_action_dim(wam, horizon)
         self.dims = {
             "obs_dim": obs_dim,
             "noise_dim": noise_dim,
+            "wam_action_dim": wam.action_dim,
+            "active_dims": active_dims,
             "horizon": horizon,
             "executed_steps": executed_steps,
             "action_dim": action_dim,
@@ -159,6 +164,8 @@ class Trainer:
 
         self.run = init_wandb(cfg)
         self.agent: SACAgent = instantiate(cfg.agent, horizon=horizon)(
+            active_dims=active_dims,
+            base_noise=base_noise,
             actor=actor,
             critic=critic,
             replay_buffer=self.replay_buffer,

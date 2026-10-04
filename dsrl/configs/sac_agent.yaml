@@ -4,8 +4,10 @@
 #   make_agent = hydra.utils.instantiate(cfg)
 #   agent = make_agent(actor=..., critic=[...], replay_buffer=..., wam=..., wandb_run=run)
 # The agent only runs the WAM when acting: wam.generate(**wam_inputs, action_noise=..., decode_video=False).
-# The latent actor's output_dim (and the critic's action_dim) is the diffusion policy's
-# per-step action width; the actor's noise is replicated over `horizon` steps.
+# The latent actor's output_dim (and the critic's action_dim) is the number of steered
+# noise dims: the diffusion policy's per-step action width, or only its active dims for
+# unified-action checkpoints (active_dims / base_noise, from dsrl.models.wam_noise).
+# The actor's noise is replicated over `horizon` steps.
 
 _target_: dsrl.sac_agent.SACAgent
 _partial_: true

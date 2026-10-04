@@ -3,14 +3,16 @@
 #
 # Same setup as benchmarks/robotwin/single_eval.sh, but RoboTwin loads the DSRL
 # client (dsrl/data/robotwin/client.py), which also reports each episode's end and
-# success to the server, and it runs NUM_EPISODES episodes. RoboTwin itself is
-# used unchanged.
+# success to the server, it runs NUM_EPISODES episodes, and it launches through
+# dsrl/data/robotwin/eval_wrapper.py, which turns off RoboTwin's per-episode eval
+# videos. RoboTwin itself is used unchanged.
 #
 # Usage: bash dsrl/data/robotwin/rollout.sh <task_name> <task_config> <gpu_id> [port] [host]
 # Env:   ROBOTWIN_PATH, ROBOTWIN_PYTHON (required, as for single_eval.sh)
 #        NUM_EPISODES   episodes to run (default 100000, i.e. until stopped)
 #        SEED           RoboTwin seed index; episodes use seeds from 100000 * (1 + SEED).
 #                       Default 1 keeps training seeds apart from the evaluation seeds (SEED=0).
+#        ROBOTWIN_EVAL_VIDEO  1 keeps RoboTwin's mp4 of every episode (default 0: no videos)
 
 set -euo pipefail
 
@@ -53,9 +55,10 @@ export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/matplotlib}"
 cd "${ROBOTWIN_PATH}"
 echo "task         : ${task_name} (${task_config}), episodes=${ROBOTWIN_TEST_NUM}, seed=${seed}"
 echo "server       : ws://${host}:${port}"
+echo "eval videos  : $([[ "${ROBOTWIN_EVAL_VIDEO:-0}" == 1 ]] && echo on || echo off)"
 
 PYTHONUNBUFFERED=1 PYTHONWARNINGS=ignore::UserWarning \
-"${ROBOTWIN_PYTHON}" "${BENCH_DIR}/eval_policy_wrapper.py" \
+"${ROBOTWIN_PYTHON}" "${REPO_ROOT}/dsrl/data/robotwin/eval_wrapper.py" \
     --config    "${runtime_config}" \
     --overrides \
     --task_name        "${task_name}" \

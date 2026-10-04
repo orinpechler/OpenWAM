@@ -35,6 +35,7 @@ from omegaconf import DictConfig, OmegaConf  # noqa: E402
 
 from dsrl.data.robotwin.server import RoboTwinRLServer  # noqa: E402
 from dsrl.models.latent_actor import LatentActor  # noqa: E402
+from dsrl.models.wam_noise import steering_noise_layout  # noqa: E402
 from dsrl.sac_agent import SACAgent  # noqa: E402
 from dsrl.train_dsrl import build_engine  # noqa: E402
 
@@ -44,16 +45,28 @@ logger = logging.getLogger("test_wam_dsrl")
 class SteeringPolicy:
     """The latent actor and the frozen WAM, with the ``act`` interface ``RoboTwinRLServer`` uses."""
 
-    # Same steering as in training; these only need horizon / executed_steps / wam / device.
+    # Same steering as in training; these only need horizon / active_dims / base_noise /
+    # executed_steps / wam / device.
     expand_noise = SACAgent.expand_noise
     decode = SACAgent.decode
 
-    def __init__(self, actor: LatentActor, wam, horizon: int, executed_steps: int, device: str | torch.device):
+    def __init__(
+        self,
+        actor: LatentActor,
+        wam,
+        horizon: int,
+        executed_steps: int,
+        active_dims: list[int] | None,
+        base_noise: torch.Tensor | None,
+        device: str | torch.device,
+    ):
         self.device = torch.device(device)
         self.actor = actor.to(self.device).eval()
         self.wam = wam
         self.horizon = horizon
         self.executed_steps = executed_steps
+        self.active_dims = active_dims
+        self.base_noise = None if base_noise is None else base_noise.to(device=self.device, dtype=torch.float32)
 
     @torch.no_grad()
     def act(self, obs: torch.Tensor, wam_inputs, deterministic: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
@@ -79,11 +92,23 @@ def resolve_policy_checkpoint(ref: str, train_config: str | None) -> tuple[Path,
     return path, cfg
 
 
-def load_actor(path: Path, cfg: DictConfig, input_dim: int, output_dim: int) -> LatentActor:
-    """Build the actor from the training config and load only its weights."""
-    actor = instantiate(cfg.actor, input_dim=input_dim, output_dim=output_dim)
+def load_actor(
+    path: Path, cfg: DictConfig, input_dim: int, output_dim: int, active_dims: list[int] | None
+) -> LatentActor:
+    """Build the actor from the training config and load only its weights.
+
+    ``active_dims`` are the noise dims steered with this WAM; they must be the
+    ones the actor was trained to steer.
+    """
     # mmap: only the actor's tensors are read from disk.
     state = torch.load(path, map_location="cpu", mmap=True, weights_only=True)
+    trained_dims = state.get("active_dims")
+    if trained_dims != active_dims:
+        raise ValueError(
+            f"the actor was trained to steer noise dims {trained_dims}, but this WAM's active dims are "
+            f"{active_dims}; use the OpenWAM checkpoint it was trained with"
+        )
+    actor = instantiate(cfg.actor, input_dim=input_dim, output_dim=output_dim)
     actor.load_state_dict(state["actor"])
     logger.info("Loaded actor from %s (agent update step %s)", path, state.get("update_step"))
     return actor
@@ -103,12 +128,16 @@ def build_server(args: argparse.Namespace) -> RoboTwinRLServer:
     horizon = int(getattr(engine.cfg.inference, "num_frames", 49)) - 1
     executed_steps = cfg.agent.executed_steps or horizon
 
-    actor = load_actor(policy_path, cfg, input_dim=encoder.feature_dim, output_dim=wam.action_dim)
-    policy = SteeringPolicy(actor, wam, horizon, executed_steps, device=args.device)
+    active_dims, base_noise = steering_noise_layout(wam, horizon)
+    noise_dim = wam.action_dim if active_dims is None else len(active_dims)
+
+    actor = load_actor(policy_path, cfg, encoder.feature_dim, noise_dim, active_dims)
+    policy = SteeringPolicy(actor, wam, horizon, executed_steps, active_dims, base_noise, device=args.device)
     logger.info(
-        "Steering policy ready: horizon=%d executed_steps=%d noise_dim=%d obs_dim=%d, %s actions",
+        "Steering policy ready: horizon=%d executed_steps=%d noise_dim=%d (of %d) obs_dim=%d, %s actions",
         horizon,
         executed_steps,
+        noise_dim,
         wam.action_dim,
         encoder.feature_dim,
         "sampled" if args.stochastic else "mean",
