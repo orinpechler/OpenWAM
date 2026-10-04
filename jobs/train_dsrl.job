@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=18
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 #SBATCH --signal=B:USR1@900
 #SBATCH --output=jobs/logs/%x_%j.out
 
@@ -20,7 +20,7 @@
 #
 # Submit from the repo root (extra arguments are Hydra overrides of train_dsrl.yaml):
 #   sbatch jobs/train_dsrl.job
-#   sbatch jobs/train_dsrl.job train.max_episodes=500 wandb.name=adjust_bottle_dsrl
+#   sbatch jobs/train_dsrl.job train.max_transitions=5000 wandb.name=adjust_bottle_dsrl
 
 set -euo pipefail
 
@@ -35,7 +35,7 @@ TASK_CONFIG="demo_randomized"
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
 
 export ROBOTWIN_PATH ROBOTWIN_PYTHON
-export NUM_EPISODES="${NUM_EPISODES:-100000}"   # the trainer stops at train.max_episodes
+export NUM_EPISODES="${NUM_EPISODES:-100000}"   # the trainer stops at its budget (train.max_transitions / max_episodes)
 
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 [[ -d "${CKPT_DIR}" ]] || { echo "[ERROR] CKPT_DIR not found: ${CKPT_DIR}" >&2; exit 1; }

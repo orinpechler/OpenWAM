@@ -31,8 +31,8 @@ replay_buffer:
 
 train:
   seed: 0
-  max_episodes: 1000         # training episodes (evaluation episodes not counted); null: no limit
-  max_transitions: null      # stored transitions; null: no limit
+  max_episodes: null         # training episodes (evaluation episodes not counted); null: no limit
+  max_transitions: 1000      # stored transitions (chunks of 32 steps, ~32k env steps); null: no limit
   learning_starts: 100       # transitions (chunks) in the buffer before the first update; ~8-25 adjust_bottle episodes
   eval_every_episodes: 10    # every N-th episode acts with the actor's mean and is not stored; 0: never
   success_window: 20         # episodes in the rolling success rate
@@ -49,7 +49,7 @@ checkpoint:
 
 wandb:
   enabled: true
-  project: openwam-dsrl
+  project: dsrl-for-wam
   entity: null
   name: null
   group: null
