@@ -1,0 +1,72 @@
+# DSRL-NA training on RoboTwin (dsrl/train_dsrl.py). The script is the policy server:
+# it loads the WAM, serves dsrl/robotwin_client.py (run with dsrl/robotwin_rollout.sh)
+# and trains the SAC agent on the chunk-level transitions it collects.
+#   python dsrl/train_dsrl.py wam.ckpt_dir=<checkpoint dir> server.port=<port>
+# The component configs below are composed in; their ??? dims are filled in at runtime
+# from the WAM (obs_dim, noise_dim, horizon, action_dim).
+
+defaults:
+  - latent_actor@actor
+  - q_action@q_action
+  - q_noise@q_noise
+  - replay_buffer@replay_buffer
+  - sac_agent@agent
+  - wam_encoder@encoder
+  - _self_
+
+wam:
+  ckpt_dir: ???              # required: self-contained OpenWAM checkpoint directory
+  ckpt_name: null            # checkpoint_step_*.safetensors inside ckpt_dir; null: the latest
+  device: cuda:0
+  deploy_config: null        # deploy yaml; null: configs/deploy.yaml
+  overrides: []              # dotlist overrides of the deploy yaml, e.g. [inference.denoise_steps=5]
+
+server:
+  host: 127.0.0.1
+  port: 8848
+
+critics:
+  num_q_action: 2            # Q^A ensemble size (clipped double-Q with agent.target_reduction=min)
+  num_q_noise: 2             # Q^W ensemble size
+
+replay_buffer:
+  # Each stored state also keeps its preprocessed observation (image, prompt, state) in
+  # host memory, since the updates rebuild the WAM inputs of replayed states:
+  # roughly capacity x (image size, ~0.4 MB) of RAM.
+  capacity: 20000
+
+train:
+  seed: 0
+  max_episodes: 1000         # training episodes (evaluation episodes not counted); null: no limit
+  max_transitions: null      # stored transitions; null: no limit
+  learning_starts: 100       # transitions in the buffer before the first update
+  updates_per_transition: 1.0  # agent.update() calls owed per stored transition (one transition = one chunk)
+  # Updates run while the RoboTwin client waits for a reply, which it waits for at most
+  # request_timeout (300 s in benchmarks/robotwin/policy_config.yml). Owed updates run
+  # within this wall-clock budget per message and the rest carry over to later messages.
+  max_update_seconds: 240
+  eval_every_episodes: 10    # every N-th episode acts with the actor's mean and is not stored; 0: never
+  success_window: 20         # episodes in the rolling success rate
+  stop_on_disconnect: true   # stop training when the RoboTwin client disconnects
+
+checkpoint:
+  dir: ${hydra:runtime.output_dir}/checkpoints
+  every_episodes: 50         # save (and upload to wandb) every N training episodes; 0: only at the end
+  upload: true
+  resume: null               # local .pt or wandb artifact ref ("dsrl-agent-<run id>:latest") to start from
+
+wandb:
+  enabled: true
+  project: openwam-dsrl
+  entity: null
+  name: null
+  group: null
+  tags: []
+  mode: online               # online | offline | disabled
+  id: null                   # set (with resume) to continue an existing run
+
+hydra:
+  run:
+    dir: outputs/dsrl/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: false

@@ -1,0 +1,107 @@
+#!/bin/bash
+#SBATCH --job-name=dsrl_train
+#SBATCH --partition=gpu_a100
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=48:00:00
+#SBATCH --signal=B:USR1@900
+#SBATCH --output=jobs/logs/%x_%j.out
+
+# DSRL-NA training on RoboTwin on one Snellius GPU: starts dsrl/train_dsrl.py (the
+# policy server + learner) in the background, waits until its WebSocket port is
+# open, then runs dsrl/robotwin_rollout.sh against it. Both share the GPU.
+# 15 minutes before the time limit the trainer gets SIGTERM, saves a final
+# checkpoint and finishes its wandb run.
+#
+# Submit from the repo root (extra arguments are Hydra overrides of train_dsrl.yaml):
+#   sbatch jobs/train_dsrl.job
+#   sbatch jobs/train_dsrl.job train.max_episodes=500 wandb.name=adjust_bottle_dsrl
+
+set -euo pipefail
+
+ROBOTWIN_PATH="${ROBOTWIN_PATH:-/gpfs/home6/opechler/RoboTwin}"
+ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON:-/home/opechler/.conda/envs/robotwin/bin/python}"
+CKPT_DIR="${CKPT_DIR:-assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Sim-RoboTwin-Full}"
+ENV_NAME="${ENV_NAME:-openwam}"
+TASK="${TASK:-adjust_bottle}"
+TASK_CONFIG="${TASK_CONFIG:-demo_clean}"
+SERVER_TIMEOUT="${SERVER_TIMEOUT:-1800}"   # seconds to wait for model load
+
+export ROBOTWIN_PATH ROBOTWIN_PYTHON
+export NUM_EPISODES="${NUM_EPISODES:-100000}"   # the trainer stops at train.max_episodes
+
+cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
+[[ -d "${CKPT_DIR}" ]] || { echo "[ERROR] CKPT_DIR not found: ${CKPT_DIR}" >&2; exit 1; }
+
+# GPU nodes can be shared between jobs, so derive the port from the job id.
+PORT=$((20000 + ${SLURM_JOB_ID:-0} % 20000))
+HOST=127.0.0.1
+TRAIN_LOG="jobs/logs/${SLURM_JOB_NAME:-dsrl_train}_${SLURM_JOB_ID:-local}_trainer.log"
+
+module purge
+module load 2025
+module load Anaconda3/2025.06-1
+# torch.compile (Triton) needs a C compiler at runtime.
+module load GCC/14.2.0
+# RoboTwin pipes eval videos through ffmpeg (eval_video_log in task_config).
+module load FFmpeg/7.1.1-GCCcore-14.2.0
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "${ENV_NAME}"
+
+echo "node         : $(hostname)"
+echo "checkpoint   : ${CKPT_DIR}"
+echo "task         : ${TASK} (${TASK_CONFIG})"
+echo "trainer      : ws://${HOST}:${PORT}, log=${TRAIN_LOG}"
+nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv
+
+# ── Trainer / policy server (background) ─────────────────────────────────────
+PYTHONUNBUFFERED=1 python dsrl/train_dsrl.py \
+    wam.ckpt_dir="${CKPT_DIR}" wam.device=cuda:0 \
+    server.host="${HOST}" server.port="${PORT}" \
+    wandb.group="${TASK}" \
+    "$@" > "${TRAIN_LOG}" 2>&1 &
+trainer_pid=$!
+rollout_pid=""
+
+cleanup() {
+    [[ -n "${rollout_pid}" ]] && kill "${rollout_pid}" 2>/dev/null || true
+    kill "${trainer_pid}" 2>/dev/null || true
+    wait 2>/dev/null || true
+}
+trap cleanup EXIT
+# Time limit approaching: let the trainer checkpoint and close wandb.
+trap 'echo "[INFO] Time limit near, stopping trainer"; kill -TERM "${trainer_pid}" 2>/dev/null || true' USR1
+
+echo "[INFO] Waiting for trainer (pid ${trainer_pid}) on port ${PORT}..."
+start=${SECONDS}
+until (exec 3<>"/dev/tcp/${HOST}/${PORT}") 2>/dev/null; do
+    if ! kill -0 "${trainer_pid}" 2>/dev/null; then
+        echo "[ERROR] Trainer exited during startup. Last lines of ${TRAIN_LOG}:" >&2
+        tail -n 50 "${TRAIN_LOG}" >&2
+        exit 1
+    fi
+    if (( SECONDS - start > SERVER_TIMEOUT )); then
+        echo "[ERROR] Trainer not listening after ${SERVER_TIMEOUT}s." >&2
+        tail -n 50 "${TRAIN_LOG}" >&2
+        exit 1
+    fi
+    sleep 5
+done
+echo "[INFO] Trainer up after $((SECONDS - start))s."
+
+# ── RoboTwin client (training seeds, SEED=1 by default) ──────────────────────
+# gpu_id 0 is the first GPU of this job's allocation (SLURM renumbers them).
+bash dsrl/robotwin_rollout.sh "${TASK}" "${TASK_CONFIG}" 0 "${PORT}" "${HOST}" &
+rollout_pid=$!
+
+# The trainer ends the run (budget reached, client gone, or SIGTERM); waits are
+# re-entered after the USR1 trap interrupts them.
+status=0
+while kill -0 "${trainer_pid}" 2>/dev/null; do
+    wait "${trainer_pid}" && status=0 || status=$?
+done
+echo "[INFO] Trainer exited with status ${status}. Log: ${TRAIN_LOG}"
+exit "${status}"
