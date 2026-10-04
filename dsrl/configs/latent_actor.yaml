@@ -13,7 +13,7 @@ activation:                # hidden activation, passed as a class (default torch
   path: torch.nn.Tanh
 layer_norm: true           # LayerNorm after each hidden Linear, before the activation
 set_range: true            # squash samples with tanh into (-range_scale, range_scale)
-range_scale: 1.0
+range_scale: 1.5
 log_std_min: -20.0         # log_std is clamped to [log_std_min, log_std_max]
 log_std_max: 2.0
-orthogonal_init: false     # true: orthogonal init with near-zero heads (initial output ~ N(0, I))
+orthogonal_init: true     # true: orthogonal init with near-zero heads (initial output ~ N(0, I))
