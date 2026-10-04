@@ -146,6 +146,13 @@ class Trainer:
         torch.manual_seed(cfg.train.seed)
         np.random.seed(cfg.train.seed)
 
+        # The checkpoint dir carries the run's config, so a checkpoint can be evaluated wherever
+        # it is. Written first, so an unwritable dir fails before the WAM is loaded.
+        self.checkpoint_dir = Path(cfg.checkpoint.dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        OmegaConf.save(cfg, self.checkpoint_dir / "config.yaml", resolve=True)
+        logger.info("Checkpoints and config in %s", self.checkpoint_dir)
+
         self.engine = build_engine(cfg)
         wam = self.engine.architecture
         self.encoder = instantiate(cfg.encoder)(wam=wam)
@@ -185,12 +192,6 @@ class Trainer:
         )
         if cfg.checkpoint.resume:
             self._resume(str(cfg.checkpoint.resume))
-
-        # The checkpoint dir carries the run's config, so a checkpoint can be evaluated wherever it is.
-        self.checkpoint_dir = Path(cfg.checkpoint.dir)
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        OmegaConf.save(cfg, self.checkpoint_dir / "config.yaml", resolve=True)
-        logger.info("Checkpoints and config in %s", self.checkpoint_dir)
 
         self.server = TrainingServer(
             self.engine,

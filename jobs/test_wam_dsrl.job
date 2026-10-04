@@ -54,6 +54,12 @@ module load FFmpeg/7.1.1-GCCcore-14.2.0
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${ENV_NAME}"
 
+# wandb's local files (staging of uploads, artifact cache and downloads) on shared scratch,
+# not in $HOME or the repo.
+WANDB_SCRATCH="/scratch-shared/${USER}/wandb"
+export WANDB_DATA_DIR="${WANDB_SCRATCH}/data" WANDB_CACHE_DIR="${WANDB_SCRATCH}/cache" WANDB_ARTIFACT_DIR="${WANDB_SCRATCH}/artifacts"
+mkdir -p "${WANDB_DATA_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_ARTIFACT_DIR}"
+
 echo "node         : $(hostname)"
 echo "checkpoint   : ${CKPT_DIR}"
 echo "policy       : ${POLICY_CKPT}"

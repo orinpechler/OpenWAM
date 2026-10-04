@@ -295,6 +295,10 @@ class SACAgent:
         return state
 
     def load_state_dict(self, state: dict) -> None:
+        if state.get("active_dims") != self.active_dims:
+            raise ValueError(
+                f"checkpoint steers noise dims {state.get('active_dims')}, this agent steers {self.active_dims}"
+            )
         self.actor.load_state_dict(state["actor"])
         self.critic.load_state_dict(state["critic"])
         self.critic_target.load_state_dict(state["critic_target"])
