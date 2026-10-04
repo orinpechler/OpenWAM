@@ -3,7 +3,7 @@ Space Reinforcement Learning"), one per update so a SAC agent can step each
 network with its own optimizer. The frozen diffusion policy is part of the
 environment, so every loss works on (state, latent noise) only:
 
-    critic_loss         Q(s, w): soft TD on the stored latent noise
+    critic_loss         Q(s, w): TD on the rewards, on the stored latent noise (no entropy)
     actor_loss          pi^W(w | s): maximize Q - alpha * log pi^W
     temperature_loss    alpha: SAC entropy tuning
 """

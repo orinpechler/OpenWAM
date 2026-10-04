@@ -43,13 +43,13 @@ class SACAgent:
     rest come from the fixed ``base_noise`` (horizon, action_dim).
 
     The diffusion policy is treated as part of the environment: transitions are
-    (s, w, r, s') and the critic Q(s, w) is learned with soft TD directly on the
-    stored noise, so updates never run the WAM; it only runs when acting.
+    (s, w, r, s') and the critic Q(s, w) is learned with TD on the rewards directly
+    on the stored noise, so updates never run the WAM; it only runs when acting.
 
     ``update`` is the training for one environment timestep: ``gradient_steps``
     rounds of, each on a fresh batch and with one optimizer per network,
 
-        1. critic Q             soft TD on the stored noise     (critic_loss)
+        1. critic Q             TD on the stored noise          (critic_loss)
         2. Polyak update of the critic targets every ``target_update_interval`` rounds
         3. latent actor pi^W    maximize Q + entropy            (actor_loss)
         4. temperature alpha                                    (temperature_loss)
@@ -230,7 +230,6 @@ class SACAgent:
             self.critic,
             self.critic_target,
             self.actor,
-            self.alpha,
             self.gamma,
             self.target_reduction,
         )

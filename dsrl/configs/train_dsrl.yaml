@@ -33,7 +33,7 @@ train:
   seed: 0
   max_episodes: 1000         # training episodes (evaluation episodes not counted); null: no limit
   max_transitions: null      # stored transitions; null: no limit
-  learning_starts: 500       # transitions (chunks) in the buffer before the first update; ~45 adjust_bottle episodes
+  learning_starts: 100       # transitions (chunks) in the buffer before the first update; ~8-25 adjust_bottle episodes
   eval_every_episodes: 10    # every N-th episode acts with the actor's mean and is not stored; 0: never
   success_window: 20         # episodes in the rolling success rate
   stop_on_disconnect: true   # stop training when the RoboTwin client disconnects

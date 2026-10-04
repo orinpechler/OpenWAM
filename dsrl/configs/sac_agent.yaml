@@ -21,7 +21,7 @@ gradient_steps: 20           # per environment timestep: N rounds of (critic ste
 actor_lr: 3.0e-4
 critic_lr: 3.0e-4
 alpha_lr: 3.0e-4
-init_alpha: 1.0              # initial SAC entropy coefficient
+init_alpha: 0.1             # initial SAC entropy coefficient
 target_entropy: null         # null: -noise_dim
 target_reduction: min        # how critic ensembles are reduced: min (clipped double-Q) or mean
 target_update_interval: 1    # target Polyak update every N critic gradient steps
